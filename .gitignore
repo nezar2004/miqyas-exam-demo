@@ -3,3 +3,6 @@ data/
 *.sqlite-shm
 *.sqlite-wal
 .env
+node_modules/
+.firebase/
+.secret.local
