@@ -10,6 +10,13 @@ nav{display:grid;gap:8px;margin-top:12px}
 .sidebar select,.sidebar button{background:#202e50;border-color:#39486a;color:white;text-align:right;width:100%}
 .sidebar button[aria-current="page"]{background:#3456df;border-color:#3456df}
 .side-note{margin-top:auto;border-top:1px solid #39486a;padding-top:18px}
+.identity{padding:12px 14px;border:1px solid #39486a;border-radius:12px}
+.signed-out{display:block}
+.signed-out .sidebar,.signed-out .top{display:none}
+.signed-out main{max-width:1000px;margin:auto;padding-top:clamp(24px,7vh,70px)}
+.login-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px;align-items:start}
+.credentials{display:grid;gap:8px;margin-top:14px}
+.credentials button{text-align:right}
 .dot{display:inline-block;width:8px;height:8px;background:#68ddb6;border-radius:50%;margin-left:6px}
 main{padding:22px clamp(18px,4vw,55px) 36px;min-width:0}
 .top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px;font-size:14px;color:var(--muted)}

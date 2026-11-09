@@ -7,15 +7,28 @@ const sample = {
   ],
   exams:[{id:'e1', title:'أساسيات تحليل النظم', duration:5, pass:60, start:'', shuffle:false, ids:['q1','q2','q3']}],
   people:[
-    {name:'نور أحمد', role:'student', enabled:true},
-    {name:'ليان خالد', role:'teacher', enabled:true},
-    {name:'عمر علي', role:'admin', enabled:true}
+    {id:'nour', name:'نور أحمد', role:'student', enabled:true},
+    {id:'sara', name:'سارة محمود', role:'student', enabled:true},
+    {id:'yousef', name:'يوسف سامر', role:'student', enabled:true},
+    {id:'layan', name:'ليان خالد', role:'teacher', enabled:true},
+    {id:'omar', name:'عمر علي', role:'admin', enabled:true}
   ],
   attempts:{}, results:[], log:[]
 };
 let db = JSON.parse(localStorage.getItem(key) || 'null') || sample;
-let role = 'student';
-let page = 'exams';
+if (!db.people[0].id) {
+  const previous = db.people;
+  db.people = sample.people.map(person=>({...person,enabled:previous.find(item=>item.name===person.name)?.enabled ?? true}));
+  for (const [examId, attempt] of Object.entries(db.attempts)) {
+    db.attempts['nour/'+examId] = {...attempt,examId,student:'nour'};
+    delete db.attempts[examId];
+  }
+  db.results.forEach(result=>{result.student='nour';});
+  localStorage.setItem(key,JSON.stringify(db));
+}
+let account = db.people.find(person=>person.enabled && person.id===sessionStorage.getItem('miqyas-account'));
+let role = account?.role;
+let page = role==='admin'?'people':'exams';
 let active = '';
 let position = 0;
 const roleNames = {student:'طالب', teacher:'مدرّس', admin:'مدير النظام'};
@@ -33,29 +46,45 @@ const hero = (tag, title, description) => `<section class="hero"><div class="eye
 const metric = (label, value) => `<div class="card"><span class="muted">${label}</span><strong class="metric">${value}</strong></div>`;
 const table = (headers, rows) => `<div class="table"><table><thead><tr>${headers.map(x=>`<th scope="col">${x}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(x=>`<td>${x}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 const fmt = value => new Date(value).toLocaleString('ar-JO', {dateStyle:'medium', timeStyle:'short'});
-const completed = id => db.results.find(result=>result.id===id);
+const completed = (id, student = account?.id) => db.results.find(result=>result.id===id && result.student===student);
+const studentName = id => db.people.find(person=>person.id===id)?.name || id;
+const attemptKey = id => account.id+'/'+id;
 const question = id => db.questions.find(item=>item.id===id);
 function save() { localStorage.setItem(key, JSON.stringify(db)); }
 function record(label) { db.log.unshift({label, at:Date.now()}); save(); }
 function toast(message) { notice.textContent = message; }
 function render() {
+  document.body.classList.toggle('signed-out', !account);
+  if (!account) { view.innerHTML = login(); return; }
+  document.querySelector('#account-name').textContent = account.name;
+  document.querySelector('#account-role').textContent = roleNames[role];
   nav.innerHTML = Object.entries(menus[role]).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${title}</button>`).join('');
   document.querySelector('#section').textContent = menus[role][page] || 'تقديم الامتحان';
   const screens = {exams, results, bank, create, analytics, people, log, attempt};
   view.innerHTML = screens[page]();
   tick();
 }
+function login() {
+  return hero('مقياس · بوابة الامتحانات','تسجيل الدخول','ادخل بحساب تجريبي لإنشاء امتحان أو تقديمه أو متابعة نتائجه.')+
+    `<div class="login-grid"><section class="card"><h2>دخول إلى المنصة</h2><form id="login-form">
+    <label>اسم المستخدم<input name="username" required autocomplete="username" dir="ltr"></label>
+    <label>كلمة المرور<input name="password" type="password" required autocomplete="current-password" dir="ltr"></label>
+    <div><button class="primary">تسجيل الدخول</button></div></form></section>
+    <section class="card"><h2>حسابات جاهزة للتجربة</h2><p class="muted">اختر حسابًا لتعبئة نموذج الدخول. كلمة المرور التجريبية للجميع <b dir="ltr">Demo1234</b>.</p>
+    <div class="credentials">${db.people.map(p=>button(esc(p.name)+' · '+roleNames[p.role]+' ('+esc(p.id)+')','fill-login',p.id)).join('')}</div></section></div>`;
+}
 function exams() {
   const student = role === 'student';
-  return hero('لوحة '+roleNames[role], student?'أهلاً، نور':'إدارة الامتحانات',
+  const resultCount = student ? db.results.filter(r=>r.student===account.id).length : db.results.length;
+  return hero('لوحة '+roleNames[role], student?'أهلاً، '+esc(account.name):'إدارة الامتحانات',
     student?'ابدأ بالامتحان التجريبي وشوف نتيجتك فور التسليم.':'أضف أسئلة لبنك الأسئلة، وجدول امتحانًا، وتابع نتائج الطلاب.') +
-    `<div class="grid">${metric('الامتحانات',db.exams.length)}${metric('الامتحانات المقدّمة',db.results.length)}${metric(student?'بانتظار التقديم':'أسئلة في البنك',student?db.exams.length-db.results.length:db.questions.length)}</div>
+    `<div class="grid">${metric('الامتحانات',db.exams.length)}${metric('الامتحانات المقدّمة',resultCount)}${metric(student?'بانتظار التقديم':'أسئلة في البنك',student?db.exams.length-resultCount:db.questions.length)}</div>
     <div class="row"><h2>${student?'امتحاناتك':'قائمة الامتحانات'}</h2>${student?'':button('إنشاء امتحان','page','create',true)}</div>`+
     db.exams.map(exam=>{
       const done = completed(exam.id);
       const scheduled = exam.start && Date.parse(exam.start)>Date.now();
       return `<section class="card"><div class="row"><div><span class="badge ${done?'ok':''}">${done?'تم التسليم':scheduled?'مجدول':'متاح'}</span><h3>${esc(exam.title)}</h3><p class="muted">${exam.ids.length} أسئلة · ${exam.duration} دقيقة · النجاح ${exam.pass}%${exam.start?' · '+fmt(exam.start):''}</p></div>
-      ${student ? done ? button('عرض النتيجة','page','results') : scheduled ? '' : button(db.attempts[exam.id]?'متابعة الامتحان':'ابدأ الامتحان','start',exam.id,true) : ''}</div></section>`;
+      ${student ? done ? button('عرض النتيجة','page','results') : scheduled ? '' : button(db.attempts[attemptKey(exam.id)]?'متابعة الامتحان':'ابدأ الامتحان','start',exam.id,true) : ''}</div></section>`;
     }).join('');
 }
 function bank() {
@@ -87,13 +116,14 @@ function shuffled(ids) {
   return order;
 }
 function start(id) {
+  if (role !== 'student') return;
   const exam = db.exams.find(item=>item.id===id);
   if (!exam || completed(id) || (exam.start && Date.parse(exam.start)>Date.now())) return;
-  if (!db.attempts[id]) {
-    db.attempts[id] = {order:exam.shuffle?shuffled(exam.ids):exam.ids, answers:{}, review:{}, deadline:Date.now()+exam.duration*60000};
-    record('بدأ الطالب امتحان '+exam.title);
+  active = attemptKey(id);
+  if (!db.attempts[active]) {
+    db.attempts[active] = {examId:id, student:account.id, order:exam.shuffle?shuffled(exam.ids):exam.ids, answers:{}, review:{}, deadline:Date.now()+exam.duration*60000};
+    record(account.name+' بدأ امتحان '+exam.title);
   }
-  active = id;
   position = 0;
   page = 'attempt';
   render();
@@ -102,7 +132,7 @@ function attempt() {
   const current = db.attempts[active];
   const q = question(current.order[position]);
   const count = Object.keys(current.answers).length;
-  const exam = db.exams.find(item=>item.id===active);
+  const exam = db.exams.find(item=>item.id===current.examId);
   return hero('امتحان قيد التقديم',esc(exam.title),'إجاباتك تُحفظ تلقائيًا عند اختيارها. يتم التسليم عند انتهاء الوقت.')+
     `<section class="card"><div class="row"><strong>${count} من ${current.order.length} مُجابة</strong><span class="badge warn">الوقت المتبقي <b id="timer" dir="ltr"></b></span></div>
     <progress aria-label="الأسئلة المجابة" value="${count}" max="${current.order.length}"></progress>
@@ -114,13 +144,13 @@ function attempt() {
 }
 function submit(id, expired) {
   const current = db.attempts[id];
-  const exam = db.exams.find(item=>item.id===id);
-  if (!current || completed(id)) return;
+  if (!current || completed(current.examId,current.student)) return;
+  const exam = db.exams.find(item=>item.id===current.examId);
   const details = current.order.map(question).map(q=>({prompt:q.prompt, selected:q.options[current.answers[q.id]], correct:q.options[q.correct], points:q.points, earned:current.answers[q.id]===q.correct?q.points:0}));
   const earned = details.reduce((sum,q)=>sum+q.earned,0);
   const total = details.reduce((sum,q)=>sum+q.points,0);
   const percent = Math.round(1000*earned/total)/10;
-  db.results.unshift({id,title:exam.title,details,earned,total,percent,passed:100*earned/total>=exam.pass,at:Date.now()});
+  db.results.unshift({id:exam.id,student:current.student,title:exam.title,details,earned,total,percent,passed:100*earned/total>=exam.pass,at:Date.now()});
   delete db.attempts[id];
   record((expired?'انتهى وقت امتحان ':'سلّم الطالب امتحان ')+exam.title);
 }
@@ -139,8 +169,9 @@ function tick() {
   }
 }
 function results() {
+  const own = db.results.filter(result=>result.student===account.id);
   return hero('لوحة الطالب','نتائج الامتحانات','راجع علامتك والإجابة الصحيحة لكل سؤال بعد التسليم.')+
-    (db.results.length ? db.results.map(r=>`<section class="card"><div class="row"><h2>${esc(r.title)}</h2><span class="badge ${r.passed?'ok':'warn'}">${r.passed?'ناجح':'لم ينجح'} · ${r.earned}/${r.total} · ${r.percent}%</span></div>
+    (own.length ? own.map(r=>`<section class="card"><div class="row"><h2>${esc(r.title)}</h2><span class="badge ${r.passed?'ok':'warn'}">${r.passed?'ناجح':'لم ينجح'} · ${r.earned}/${r.total} · ${r.percent}%</span></div>
     ${table(['السؤال','إجابتك','الإجابة الصحيحة','العلامة'],r.details.map(q=>[esc(q.prompt),esc(q.selected || 'بدون إجابة'),esc(q.correct),q.earned+'/'+q.points]))}</section>`).join('') : '<p class="card">ما في نتائج بعد. قدّم امتحانًا لتظهر نتيجتك هون.</p>');
 }
 function analytics() {
@@ -153,7 +184,7 @@ function analytics() {
       const count = r.filter(item=>item.percent>=min && item.percent<(max===100?101:max+1)).length;
       return `<div class="row"><span dir="ltr">${min}–${max}%</span><strong>${count}</strong></div><progress aria-label="عدد العلامات من ${min} إلى ${max}" max="${r.length||1}" value="${count}"></progress>`;
     }).join('')}</section>
-    <section class="card"><div class="row"><h2>سجل التسليمات</h2>${r.length?button('تصدير CSV','export'):''}</div>${r.length?table(['الامتحان','العلامة','النتيجة','وقت التسليم'],r.map(x=>[esc(x.title),x.percent+'%',x.passed?'ناجح':'لم ينجح',fmt(x.at)])):'<p>لا يوجد تسليمات بعد.</p>'}</section>`;
+    <section class="card"><div class="row"><h2>سجل التسليمات</h2>${r.length?button('تصدير CSV','export'):''}</div>${r.length?table(['الطالب','الامتحان','العلامة','النتيجة','وقت التسليم'],r.map(x=>[esc(studentName(x.student)),esc(x.title),x.percent+'%',x.passed?'ناجح':'لم ينجح',fmt(x.at)])):'<p>لا يوجد تسليمات بعد.</p>'}</section>`;
 }
 function people() {
   return hero('لوحة الإدارة','حسابات العرض','اطّلع على الأدوار وسجّل تغييرات حالة الحسابات التجريبية.')+
@@ -168,15 +199,19 @@ function download() {
     const str = String(value);
     return '"'+(/^[=+\-@\t\r\n]/.test(str.trimStart())?"'":"")+str.replaceAll('"','""')+'"';
   };
-  const rows = [['الامتحان','النسبة','النتيجة','وقت التسليم'],...db.results.map(r=>[r.title,r.percent,r.passed?'ناجح':'لم ينجح',new Date(r.at).toISOString()])];
+  const rows = [['الطالب','الامتحان','النسبة','النتيجة','وقت التسليم'],...db.results.map(r=>[studentName(r.student),r.title,r.percent,r.passed?'ناجح':'لم ينجح',new Date(r.at).toISOString()])];
   const url = URL.createObjectURL(new Blob(['\ufeff',rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
   const link = Object.assign(document.createElement('a'),{href:url,download:'exam-results.csv'});
   link.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-document.querySelector('#role').addEventListener('change',event=>{
-  role = event.target.value;
-  page = Object.keys(menus[role])[0];
+document.querySelector('#logout').addEventListener('click',()=>{
+  record('سجّل خروج '+account.name);
+  sessionStorage.removeItem('miqyas-account');
+  account = undefined;
+  role = undefined;
+  active = '';
+  page = 'exams';
   toast('');
   render();
 });
@@ -185,6 +220,15 @@ document.addEventListener('click',event=>{
   if (!target) return;
   const {action,id} = target.dataset;
   toast('');
+  if (!account) {
+    if (action==='fill-login') {
+      const form = document.querySelector('#login-form');
+      form.elements.username.value = id;
+      form.elements.password.value = 'Demo1234';
+      form.querySelector('button').focus();
+    }
+    return;
+  }
   if (action==='page') { page=id; render(); }
   if (action==='start') start(id);
   if (action==='jump') { position=Number(id); render(); }
@@ -204,6 +248,7 @@ document.addEventListener('click',event=>{
   if (action==='export') download();
   if (action==='toggle') {
     const person = db.people[Number(id)];
+    if (person.id===account.id) return toast('حساب المدير الحالي لازم يظل مفعّلاً.');
     person.enabled = !person.enabled;
     record((person.enabled?'تم تفعيل حساب ':'تم إيقاف حساب ')+person.name);
     render();
@@ -231,6 +276,19 @@ document.addEventListener('change',event=>{
 document.addEventListener('submit',event=>{
   event.preventDefault();
   const form = new FormData(event.target);
+  if (event.target.id==='login-form') {
+    const person = db.people.find(p=>p.id===form.get('username').trim().toLowerCase());
+    if (!person || form.get('password')!=='Demo1234') return toast('اسم المستخدم أو كلمة المرور غير صحيحة.');
+    if (!person.enabled) return toast('هذا الحساب موقوف. تواصل مع مدير النظام.');
+    account = person;
+    role = person.role;
+    page = Object.keys(menus[role])[0];
+    sessionStorage.setItem('miqyas-account',person.id);
+    record('سجّل دخول '+person.name);
+    toast('');
+    render();
+    return;
+  }
   const id = globalThis.crypto?.randomUUID?.() ?? String(Date.now());
   if (event.target.id==='question-form') {
     const options = form.get('type')==='boolean'?['صح','خطأ']:String(form.get('options')).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
