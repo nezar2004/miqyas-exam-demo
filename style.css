@@ -1,0 +1,57 @@
+:root{color-scheme:light;--ink:#17233e;--muted:#53637a;--line:#dce5f1;--blue:#254cd8;--pale:#edf2ff;--green:#086951;--white:#fff;font-family:Tahoma,"Segoe UI",sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:#f5f7fc;color:var(--ink);display:grid;grid-template-columns:245px minmax(0,1fr);min-height:100vh;line-height:1.65}
+.sidebar{background:#101b36;color:white;padding:28px 20px;display:flex;flex-direction:column;gap:15px}
+.brand{display:flex;gap:12px;align-items:center;font-size:25px;font-weight:bold;margin-bottom:24px}
+small{display:block;font-size:13px;font-weight:normal}
+.sidebar small,.sidebar .muted{color:#b8c6e5}
+.logo{display:grid;place-items:center;width:47px;height:47px;background:#4265f5;border-radius:14px}
+nav{display:grid;gap:8px;margin-top:12px}
+.sidebar select,.sidebar button{background:#202e50;border-color:#39486a;color:white;text-align:right;width:100%}
+.sidebar button[aria-current="page"]{background:#3456df;border-color:#3456df}
+.side-note{margin-top:auto;border-top:1px solid #39486a;padding-top:18px}
+.dot{display:inline-block;width:8px;height:8px;background:#68ddb6;border-radius:50%;margin-left:6px}
+main{padding:22px clamp(18px,4vw,55px) 36px;min-width:0}
+.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:24px;font-size:14px;color:var(--muted)}
+.hero{padding:clamp(24px,5vw,46px);background:radial-gradient(ellipse at 10% 0%,#486bf3,transparent 58%),linear-gradient(120deg,#253dac,#192d7b);color:white;border-radius:22px;position:relative;overflow:hidden;margin-bottom:22px}
+.hero p{color:#e3ebff;max-width:57ch;margin-bottom:0}
+.eyebrow{font-size:13px;letter-spacing:.04em;color:#e3ebff;font-weight:bold}
+h1,h2,h3,p{margin:0 0 10px}
+h1{font-size:clamp(26px,4vw,42px);line-height:1.25;margin-top:8px}
+h2{font-size:21px}
+h3{font-size:17px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:14px;margin-bottom:22px}
+.card{background:white;border:1px solid var(--line);border-radius:17px;padding:20px;margin-bottom:14px;min-width:0}
+.grid .card{margin:0}
+.metric{display:block;font-size:28px;font-weight:bold;margin-top:5px}
+.muted{color:var(--muted)}
+.row,.actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.row{justify-content:space-between}
+.badge{display:inline-block;border-radius:30px;padding:4px 10px;background:var(--pale);color:#203ba2;font-size:13px;font-weight:bold}
+.ok{background:#e0f7ef;color:var(--green)}
+.warn{background:#fff1da;color:#793f04}
+button,input,select,textarea{font:inherit;border:1px solid #c6d2e5;border-radius:9px;padding:9px 12px;min-height:44px;color:inherit;background:white}
+button{cursor:pointer;font-weight:bold}
+button:hover{filter:brightness(.96)}
+button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline:3px solid #6684ff;outline-offset:2px}
+button:disabled{cursor:default;opacity:.55}
+.primary{background:var(--blue);color:white;border-color:var(--blue)}
+form{display:grid;gap:12px}
+form label:not(.choice){display:grid;gap:4px;font-weight:bold;min-width:0}
+form label[hidden]{display:none!important}
+input,textarea,select{width:100%;min-width:0}
+.choice{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:9px 12px;min-height:44px;cursor:pointer;margin:8px 0}
+.choice:has(input:checked){border-color:#5270ec;background:var(--pale)}
+.choice input{width:18px;height:18px;min-height:0;accent-color:var(--blue)}
+.palette{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+.palette button{min-width:44px}
+.palette .answered{background:#e0f7ef;color:var(--green)}
+.palette .review{background:#fff1da;color:#793f04}
+.palette [aria-current]{outline:2px solid var(--blue);outline-offset:1px}
+.table{overflow:auto}
+table{border-collapse:collapse;width:100%;text-align:right}
+th,td{border-bottom:1px solid var(--line);padding:11px;white-space:nowrap}
+th{background:#f4f7ff}
+progress{width:100%;height:12px;accent-color:var(--blue)}
+#notice{color:var(--green);font-weight:bold;margin-top:10px}
+@media(max-width:700px){body{display:block}.sidebar{padding:15px 18px;gap:6px}.brand{margin-bottom:6px}.side-note{display:none}nav{display:flex;flex-wrap:wrap;margin:4px 0}nav button{width:auto!important}.sidebar select{max-width:240px}.top{margin-bottom:14px}}
