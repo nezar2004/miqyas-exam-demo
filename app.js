@@ -88,7 +88,7 @@ function render() {
   tick();
 }
 function publicHeader() {
-  return `<header class="public-head"><a class="brand" href="./"><span class="logo">${icon('grid')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a><span class="public-label">منصة التقييم الرقمي</span></header>`;
+  return `<header class="public-head"><a class="brand" href="index.html"><span class="logo">${icon('grid')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a><span class="public-label">منصة التقييم الرقمي</span></header>`;
 }
 function illustration() {
   return `<div class="art" aria-hidden="true"><div class="art-orbit"></div><div class="art-sheet"><div class="art-top"><i></i><i></i><i></i></div><div class="art-content"><div class="art-line"></div><div class="art-line short"></div><div class="art-chart"><i></i><i></i><i></i><i></i><i></i></div></div></div><div class="art-check">${icon('shield')}</div></div>`;
@@ -107,7 +107,7 @@ function login(entry) {
   const links=portal!=='student'?'':registration
     ? '<a class="back-link" href="?portal=student">رجوع إلى تسجيل الدخول</a>'
     : '<a class="back-link" href="?portal=student&amp;register=1">إنشاء حساب طالب</a>';
-  return publicHeader()+`<div class="login-layout"><section class="login-panel"><a class="back-link" href="./">العودة إلى البوابات ${icon('arrow')}</a><span class="portal-icon ${portal}">${icon(entry.icon)}</span><h1>${registration?'إنشاء حساب طالب':entry.title}</h1><p class="muted">${entry.detail}</p>
+  return publicHeader()+`<div class="login-layout"><section class="login-panel"><a class="back-link" href="index.html">العودة إلى البوابات ${icon('arrow')}</a><span class="portal-icon ${portal}">${icon(entry.icon)}</span><h1>${registration?'إنشاء حساب طالب':entry.title}</h1><p class="muted">${entry.detail}</p>
     <form id="${registration?'register-form':'login-form'}">${fields(registration)}<button class="primary">${registration?'إنشاء الحساب':'تسجيل الدخول'}</button></form>${links}</section>
     <aside class="login-story"><span class="kicker">MIQYAS / ${entry.code}</span><h2>${entry.title}</h2><p>${entry.detail}</p>${illustration()}<span class="story-foot">مساحة العمل المخصصة · مقياس</span></aside></div>`;
 }
@@ -231,7 +231,7 @@ document.querySelector('#logout').addEventListener('click',()=>perform(async()=>
 }));
 document.querySelector('#back').addEventListener('click',()=>{
   if (busy) return;
-  if (!previousPages.length) {location.assign('./');return;}
+  if (!previousPages.length) {location.assign('index.html');return;}
   page=previousPages.pop();
   if (page==='attempt' && !db.attempts[active]) page='exams';
   toast('');
