@@ -1,11 +1,19 @@
 import { createHash, randomBytes, randomUUID, scrypt, timingSafeEqual, randomInt } from 'node:crypto';
 import { promisify } from 'node:util';
-import { initializeApp } from 'firebase-admin/app';
+import { cert, initializeApp } from 'firebase-admin/app';
 import { getFirestore, Timestamp } from 'firebase-admin/firestore';
 import { onRequest } from 'firebase-functions/v2/https';
 import { defineSecret } from 'firebase-functions/params';
 
-initializeApp();
+const credentialJson=process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+if (process.env.RENDER && !credentialJson) throw new Error('Set FIREBASE_SERVICE_ACCOUNT_JSON before starting Miqyas.');
+if (credentialJson) {
+  const serviceAccount=JSON.parse(credentialJson);
+  if (serviceAccount.project_id!=='miqyas-exams') throw new Error('The Firebase credential must belong to miqyas-exams.');
+  initializeApp({credential:cert(serviceAccount),projectId:'miqyas-exams'});
+} else {
+  initializeApp();
+}
 const db=getFirestore();
 const accounts=db.collection('accounts');
 const sessions=db.collection('sessions');
@@ -251,7 +259,7 @@ async function api(req,res,path) {
   return state(account);
 }
 
-export const miqyasApi=onRequest({region:'us-central1',secrets:[adminEmail,adminPassword],maxInstances:5},async (req,res)=>{
+export async function handleApi(req,res) {
   res.set('X-Content-Type-Options','nosniff');
   res.set('Cache-Control','private, no-store');
   try {
@@ -261,4 +269,6 @@ export const miqyasApi=onRequest({region:'us-central1',secrets:[adminEmail,admin
     if (!error.status) console.error(error);
     res.status(error.status || 500).json({error:error.status ? error.message : 'تعذّر إكمال الطلب.'});
   }
-});
+}
+
+export const miqyasApi=onRequest({region:'us-central1',secrets:[adminEmail,adminPassword],maxInstances:5},handleApi);
