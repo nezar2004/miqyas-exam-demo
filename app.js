@@ -26,12 +26,28 @@ if (!db.people[0].id) {
   db.results.forEach(result=>{result.student='nour';});
   localStorage.setItem(key,JSON.stringify(db));
 }
-let account = db.people.find(person=>person.enabled && person.id===sessionStorage.getItem('miqyas-account'));
+const portal = new URLSearchParams(location.search).get('portal');
+let account = db.people.find(person=>person.enabled && person.role===portal && person.id===sessionStorage.getItem('miqyas-account'));
 let role = account?.role;
 let page = role==='admin'?'people':'exams';
 let active = '';
 let position = 0;
 const roleNames = {student:'طالب', teacher:'مدرّس', admin:'مدير النظام'};
+const portals = {
+  student:{title:'بوابة الطالب', code:'01', icon:'cap', detail:'قدّم امتحاناتك وتابع نتائجك في مكان واحد.', demo:'nour'},
+  teacher:{title:'بوابة المدرّس', code:'02', icon:'paper', detail:'أنشئ التقييمات، وجدول الامتحانات، وتابع أداء طلابك.', demo:'layan'},
+  admin:{title:'بوابة الإدارة', code:'03', icon:'shield', detail:'أدر الحسابات وراجع سجل النشاط في المنصة.', demo:'omar'}
+};
+const paths = {
+  cap:'<path d="m2 10 10-5 10 5-10 5-10-5Zm4 2v5c4 3 8 3 12 0v-5m4-2v6"/>',
+  paper:'<path d="M6 3h9l4 4v14H6V3Zm8 0v5h5M9 12h7m-7 4h7"/>',
+  shield:'<path d="M12 3l8 3v5c0 5-3 8-8 10-5-2-8-5-8-10V6l8-3Zm-3 9 2 2 4-4"/>',
+  arrow:'<path d="M19 12H5m6-6-6 6 6 6"/>',
+  grid:'<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M4 10h16m-10 0v10"/>',
+  chart:'<path d="M4 4v16h16M9 15v-4m5 4V7m5 8v-6"/>',
+  clock:'<circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/>'
+};
+const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 const menus = {
   student:{exams:'الامتحانات', results:'نتائجي'},
   teacher:{exams:'إدارة الامتحانات', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
@@ -43,7 +59,7 @@ const notice = document.querySelector('#notice');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char]);
 const button = (label, action, id = '', primary = false) => `<button type="button" class="${primary ? 'primary' : ''}" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
 const hero = (tag, title, description) => `<section class="hero"><div class="eyebrow">${tag}</div><h1>${title}</h1><p>${description}</p></section>`;
-const metric = (label, value) => `<div class="card"><span class="muted">${label}</span><strong class="metric">${value}</strong></div>`;
+const metric = (label, value) => `<div class="card metric-card"><span class="metric-icon">${icon('chart')}</span><span class="muted">${label}</span><strong class="metric">${value}</strong></div>`;
 const table = (headers, rows) => `<div class="table"><table><thead><tr>${headers.map(x=>`<th scope="col">${x}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(x=>`<td>${x}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 const fmt = value => new Date(value).toLocaleString('ar-JO', {dateStyle:'medium', timeStyle:'short'});
 const completed = (id, student = account?.id) => db.results.find(result=>result.id===id && result.student===student);
@@ -55,23 +71,43 @@ function record(label) { db.log.unshift({label, at:Date.now()}); save(); }
 function toast(message) { notice.textContent = message; }
 function render() {
   document.body.classList.toggle('signed-out', !account);
-  if (!account) { view.innerHTML = login(); return; }
+  if (!account) {
+    const entry = Object.hasOwn(portals,portal) ? portals[portal] : null;
+    document.title = entry ? entry.title+' | مقياس' : 'مقياس | منصة التقييم الرقمي';
+    view.innerHTML = entry ? login(entry) : gateway();
+    return;
+  }
+  document.title = portals[role].title+' | مقياس';
   document.querySelector('#account-name').textContent = account.name;
   document.querySelector('#account-role').textContent = roleNames[role];
-  nav.innerHTML = Object.entries(menus[role]).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${title}</button>`).join('');
+  const navIcons = {exams:'grid',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',log:'clock'};
+  nav.innerHTML = Object.entries(menus[role]).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#section').textContent = menus[role][page] || 'تقديم الامتحان';
   const screens = {exams, results, bank, create, analytics, people, log, attempt};
   view.innerHTML = screens[page]();
   tick();
 }
-function login() {
-  return hero('مقياس · بوابة الامتحانات','تسجيل الدخول','ادخل بحساب تجريبي لإنشاء امتحان أو تقديمه أو متابعة نتائجه.')+
-    `<div class="login-grid"><section class="card"><h2>دخول إلى المنصة</h2><form id="login-form">
-    <label>اسم المستخدم<input name="username" required autocomplete="username" dir="ltr"></label>
-    <label>كلمة المرور<input name="password" type="password" required autocomplete="current-password" dir="ltr"></label>
-    <div><button class="primary">تسجيل الدخول</button></div></form></section>
-    <section class="card"><h2>حسابات جاهزة للتجربة</h2><p class="muted">اختر حسابًا لتعبئة نموذج الدخول. كلمة المرور التجريبية للجميع <b dir="ltr">Demo1234</b>.</p>
-    <div class="credentials">${db.people.map(p=>button(esc(p.name)+' · '+roleNames[p.role]+' ('+esc(p.id)+')','fill-login',p.id)).join('')}</div></section></div>`;
+function publicHeader() {
+  return `<header class="public-head"><a class="brand" href="./"><span class="logo">${icon('grid')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a><span class="public-label">منصة التقييم الرقمي</span></header>`;
+}
+function illustration() {
+  return `<div class="art" aria-hidden="true"><div class="art-orbit"></div><div class="art-sheet"><div class="art-top"><i></i><i></i><i></i></div><div class="art-content"><div class="art-line"></div><div class="art-line short"></div><div class="art-chart"><i></i><i></i><i></i><i></i><i></i></div></div></div><div class="art-check">${icon('shield')}</div></div>`;
+}
+function gateway() {
+  return publicHeader()+`<section class="gateway-hero"><div><span class="kicker">MIQYAS / ASSESSMENT PLATFORM</span><h1>منصة واحدة.<br><em>لكل مرحلة من التقييم.</em></h1><p>أنشئ امتحاناتك، قدّمها، وتابع نتائجها من بوابة مخصصة لكل دور.</p></div>${illustration()}</section>
+    <section class="portal-section"><div class="row"><h2>اختر بوابتك</h2><span class="muted">٣ مساحات عمل</span></div><div class="portal-grid">${Object.entries(portals).map(([id,item])=>`<a class="portal-card" href="?portal=${id}"><span class="row"><span class="portal-icon ${id}">${icon(item.icon)}</span><small dir="ltr">${item.code}</small></span><h3>${item.title}</h3><p>${item.detail}</p><span class="portal-link">الانتقال إلى البوابة ${icon('arrow')}</span></a>`).join('')}</div></section>
+    <footer class="public-footer"><span>مقياس · منصة التقييم الرقمي</span><span>بيئة تجريبية</span></footer>`;
+}
+function login(entry) {
+  const demo = db.people.find(person=>person.id===entry.demo);
+  return publicHeader()+`<div class="login-layout"><section class="login-panel"><a class="back-link" href="./">العودة إلى البوابات ${icon('arrow')}</a><span class="portal-icon ${portal}">${icon(entry.icon)}</span><h1>${entry.title}</h1><p class="muted">${entry.detail}</p>
+    <form id="login-form">
+    <label>اسم المستخدم<input name="username" required autocomplete="username" placeholder="username" dir="ltr"></label>
+    <label>كلمة المرور<input name="password" type="password" required autocomplete="current-password" placeholder="••••••••" dir="ltr"></label>
+    <button class="primary">تسجيل الدخول</button></form>
+    <details class="demo-box"><summary>الحسابات التجريبية</summary><p class="muted">كلمة المرور <b dir="ltr">Demo1234</b></p><div class="credentials">${db.people.filter(p=>p.role===portal).map(p=>button(esc(p.name)+' · '+esc(p.id),'fill-login',p.id)).join('')}</div></details>
+    <button class="demo-button" data-action="fill-login" data-id="${demo.id}" type="button">تعبئة بيانات حساب ${esc(demo.name)}</button></section>
+    <aside class="login-story"><span class="kicker">MIQYAS / ${entry.code}</span><h2>${entry.title}</h2><p>${entry.detail}</p>${illustration()}<span class="story-foot">مساحة العمل المخصصة · مقياس</span></aside></div>`;
 }
 function exams() {
   const student = role === 'student';
@@ -278,7 +314,7 @@ document.addEventListener('submit',event=>{
   const form = new FormData(event.target);
   if (event.target.id==='login-form') {
     const person = db.people.find(p=>p.id===form.get('username').trim().toLowerCase());
-    if (!person || form.get('password')!=='Demo1234') return toast('اسم المستخدم أو كلمة المرور غير صحيحة.');
+    if (!person || person.role!==portal || form.get('password')!=='Demo1234') return toast('تحقّق من بيانات الدخول واختر البوابة المخصصة لحسابك.');
     if (!person.enabled) return toast('هذا الحساب موقوف. تواصل مع مدير النظام.');
     account = person;
     role = person.role;
