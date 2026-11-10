@@ -1,6 +1,6 @@
-import {initializeApp} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js';
+import {deleteApp, initializeApp} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js';
 import {
-  browserSessionPersistence, createUserWithEmailAndPassword, getAuth, setPersistence,
+  browserSessionPersistence, createUserWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence, setPersistence,
   signInWithEmailAndPassword, signOut
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
 import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, query, runTransaction, serverTimestamp, setDoc, Timestamp, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
@@ -24,6 +24,10 @@ export async function profile(portal='student') {
     if (!assigned.exists()) return null;
     return {id:user.uid,email:user.email,name:assigned.data().name || user.email,role:portal};
   }
+  const teacherRole=await getDoc(doc(db,'teacherRoles',user.uid));
+  if (teacherRole.exists()) return null;
+  const adminRole=await getDoc(doc(db,'adminRoles',user.uid));
+  if (adminRole.exists()) return null;
   const ref=doc(db,'studentProfiles',user.uid);
   const saved=await getDoc(ref);
   return {id:user.uid,email:user.email,name:saved.data()?.name,role:'student'};
@@ -54,7 +58,11 @@ export async function login({email,password},portal) {
   const account=await profile(portal);
   if (!account) {
     await signOut(auth);
-    throw new Error(portal==='admin'?'هذا الحساب يحتاج تفعيل صلاحية المدير أولًا.':'هذا الحساب يحتاج تفعيل صلاحية المدرّس أولًا.');
+    throw new Error({
+      admin:'هذا الحساب يحتاج تفعيل صلاحية المدير أولًا.',
+      teacher:'هذا الحساب يحتاج تفعيل صلاحية المدرّس أولًا.',
+      student:'استخدم بوابة المدرّس أو المدير للدخول بهذا الحساب.'
+    }[portal]);
   }
   return account;
 }
@@ -76,11 +84,35 @@ export async function loadPeople() {
   return {students:students.sort(byName),teachers:teacherAccounts.sort(byName),admins:adminAccounts.sort(byName)};
 }
 
-export async function setTeacher(person, enabled) {
-  const ref=doc(db,'teacherRoles',person.id);
-  if (enabled) await setDoc(ref,{name:person.name});
-  else await deleteDoc(ref);
+export async function createTeacher({name,email,password}) {
+  const cleanName=name.trim();
+  const cleanEmail=email.trim();
+  if (!cleanName || cleanName.length>100 || password.length<12 || password.length>128) {
+    throw new Error('أدخل اسم المدرّس وكلمة مرور بين 12 و128 حرفًا.');
+  }
+  const secondary=initializeApp(app.options,'teacher-provisioning');
+  try {
+    const teacherAuth=initializeAuth(secondary,{persistence:inMemoryPersistence});
+    let credential;
+    try {
+      credential=await createUserWithEmailAndPassword(teacherAuth,cleanEmail,password);
+    } catch (error) {
+      if (error.code!=='auth/email-already-in-use') throw error;
+      try {
+        // Allows retrying a partially completed creation with the same credentials.
+        credential=await signInWithEmailAndPassword(teacherAuth,cleanEmail,password);
+      } catch {
+        throw error;
+      }
+    }
+    const ref=doc(db,'teacherRoles',credential.user.uid);
+    if ((await getDoc(ref)).exists()) throw new Error('هذا الحساب مضاف كمدرّس بالفعل.');
+    await setDoc(ref,{name:cleanName,email:credential.user.email});
+  } finally {
+    await deleteApp(secondary);
+  }
 }
+export function removeTeacher(id) {return deleteDoc(doc(db,'teacherRoles',id));}
 
 function bank() {
   return collection(db,'teacherBanks',auth.currentUser.uid,'questions');

@@ -18,9 +18,14 @@ service cloud.firestore {
       allow get: if admin() || (request.auth != null && request.auth.uid == uid);
       allow list: if admin();
       allow create: if admin()
-        && request.resource.data.keys().hasOnly(['name'])
+        && request.resource.data.keys().hasOnly(['name', 'email'])
         && request.resource.data.name is string
-        && request.resource.data.name == get(/databases/$(database)/documents/studentProfiles/$(uid)).data.name;
+        && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 100
+        && request.resource.data.email is string
+        && request.resource.data.email.size() <= 254
+        && request.resource.data.email.matches('^[^@ ]+@[^@ ]+[.][^@ ]+$')
+        && !exists(/databases/$(database)/documents/studentProfiles/$(uid))
+        && !exists(/databases/$(database)/documents/adminRoles/$(uid));
       allow delete: if admin();
     }
     match /teacherBanks/{uid}/questions/{id} {
@@ -77,7 +82,7 @@ service cloud.firestore {
       }
       allow get: if ownsProfile() || admin();
       allow list: if admin();
-      allow create: if ownsProfile() && validProfile();
+      allow create: if ownsProfile() && !teacher() && !admin() && validProfile();
     }
   }
 }

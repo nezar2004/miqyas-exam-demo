@@ -252,13 +252,10 @@ function people() {
     <section class="card">${table(['الاسم','البريد','الدور','الحالة','الإجراء'],db.people.map(p=>[esc(p.name),esc(p.email),roleNames[p.role],p.enabled?'مفعّل':'موقوف',p.role==='admin'?'—':button(p.enabled?'إيقاف':'تفعيل','toggle',p.id)]))}</section>`;
 }
 function addTeacher() {
-  return hero('لوحة الإدارة','إضافة مدرّس','اختر حسابًا مسجّلًا لإعطائه صلاحية الدخول إلى بوابة المدرّس.')+
-    `<section class="card">${db.students.length?`<form id="assign-teacher-form">
-      <label>الحساب<select name="accountId" required><option value="">اختر الاسم والبريد</option>
-      ${db.students.map(person=>`<option value="${esc(person.id)}">${esc(person.name)} · ${esc(person.email)}</option>`).join('')}</select></label>
-      <div class="actions"><button class="primary">إضافة مدرّس</button>${button('رجوع للحسابات','page','people')}</div>
-    </form>`:'<p>ما في حساب متاح للإضافة حاليًا. خلي المدرّس يسجّل حساب أولًا.</p>'}
-    <p><a class="back-link" href="?portal=student&amp;register=1" target="_blank" rel="noopener">فتح صفحة إنشاء الحساب</a></p></section>`;
+  return hero('لوحة الإدارة','إضافة مدرّس','أنشئ حسابًا جديدًا للمدرّس حتى يدخل من بوابته مباشرة.')+
+    `<section class="card"><form id="create-teacher-form">${fields(true)}
+      <div class="actions"><button class="primary">إنشاء حساب المدرّس</button>${button('رجوع للحسابات','page','people')}</div>
+    </form></section>`;
 }
 function log() {
   return hero('لوحة الإدارة','سجل النشاط','راجع عمليات الدخول وتغييرات الحسابات والامتحانات.')+
@@ -307,7 +304,7 @@ document.addEventListener('click',event=>{
     const person=db.teachers.find(item=>item.id===id);
     if (person && confirm('إلغاء صلاحية المدرّس عن '+person.name+'؟')) {
       perform(async()=>{
-        await firebase.setTeacher(person,false);
+        await firebase.removeTeacher(person.id);
         await loadFirebaseAccount(account);
         render();
         toast('تم إلغاء صلاحية المدرّس.');
@@ -359,11 +356,14 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=4');
-        if (event.target.id==='assign-teacher-form' && role==='admin') {
-          const person=db.students.find(item=>item.id===values.accountId);
-          if (!person) throw new Error('اختر حسابًا مسجّلًا من القائمة.');
-          await firebase.setTeacher(person,true);
+        firebase ??= await import('./firebase-student.js?v=5');
+        if (event.target.id==='create-teacher-form' && role==='admin') {
+          try {await firebase.createTeacher(values);}
+          catch (error) {
+            if (error.code==='auth/email-already-in-use') throw new Error('هذا البريد مستخدم بالفعل. استخدم بريدًا جديدًا للمدرّس.');
+            if (error.code==='permission-denied') throw new Error('تعذّر تفعيل هذا الحساب كمدرّس. إذا كان مسجّلًا كطالب أو مدير، استخدم بريدًا جديدًا.');
+            throw error;
+          }
           await loadFirebaseAccount(account);
           navigate('people');
           toast('تمت إضافة المدرّس.');
@@ -451,7 +451,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=4');
+    firebase=await import('./firebase-student.js?v=5');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;
