@@ -1,6 +1,54 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function teacher() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/teacherRoles/$(request.auth.uid));
+    }
+    // Teacher roles are provisioned by the Firebase project owner.
+    match /teacherRoles/{uid} {
+      allow get: if request.auth != null && request.auth.uid == uid;
+    }
+    match /teacherBanks/{uid}/questions/{id} {
+      function validQuestion() {
+        let q = request.resource.data;
+        return q.keys().hasOnly(['prompt', 'options', 'correct', 'points'])
+          && q.prompt is string && q.prompt.size() > 0 && q.prompt.size() <= 400
+          && q.options is list && q.options.size() >= 2 && q.options.size() <= 10
+          && q.correct is int && q.correct >= 0 && q.correct < q.options.size()
+          && q.points is int && q.points >= 1 && q.points <= 100;
+      }
+      allow read: if teacher() && request.auth.uid == uid;
+      allow create: if teacher() && request.auth.uid == uid && validQuestion();
+    }
+    match /teacherBanks/{uid}/papers/{id} {
+      allow get: if teacher() && request.auth.uid == uid;
+      allow create: if teacher() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['ids', 'shuffle'])
+        && request.resource.data.ids is list
+        && request.resource.data.ids.size() >= 1 && request.resource.data.ids.size() <= 100
+        && request.resource.data.shuffle is bool
+        && getAfter(/databases/$(database)/documents/publishedExams/$(id)).data.owner == uid
+        && getAfter(/databases/$(database)/documents/publishedExams/$(id)).data.questionCount
+          == request.resource.data.ids.size();
+    }
+    match /publishedExams/{id} {
+      function validExam() {
+        let exam = request.resource.data;
+        return exam.keys().hasOnly(['owner', 'title', 'section', 'start', 'duration', 'pass', 'questionCount', 'publishedAt'])
+          && exam.owner == request.auth.uid
+          && exam.title is string && exam.title.size() > 0 && exam.title.size() <= 100
+          && exam.section is string && exam.section.size() > 0 && exam.section.size() <= 80
+          && exam.start is timestamp
+          && exam.duration is int && exam.duration >= 1 && exam.duration <= 180
+          && exam.pass is int && exam.pass >= 0 && exam.pass <= 100
+          && exam.questionCount is int && exam.questionCount >= 1 && exam.questionCount <= 100
+          && exam.publishedAt == request.time;
+      }
+      allow read: if request.auth != null;
+      allow create: if teacher() && validExam()
+        && existsAfter(/databases/$(database)/documents/teacherBanks/$(request.auth.uid)/papers/$(id));
+    }
     // Student profiles contain only a name, the signed-in email, and a creation timestamp.
     match /studentProfiles/{uid} {
       function ownsProfile() {

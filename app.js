@@ -1,8 +1,8 @@
 const params = new URLSearchParams(location.search);
 const portal = params.get('portal');
 const pagesHost = location.hostname==='nezar2004.github.io';
-const firebaseStudent = pagesHost && portal==='student';
-const staticPreview = pagesHost && !firebaseStudent;
+const firebasePortal = pagesHost && ['student','teacher'].includes(portal);
+const staticPreview = pagesHost && !firebasePortal;
 let firebase;
 let registration = portal==='student' && params.has('register');
 let account, role, db;
@@ -73,13 +73,20 @@ function navigate(next) {
   render();
 }
 function toast(message) { notice.textContent = message; }
+async function loadFirebaseAccount(next) {
+  const data=next?.name ? await firebase.loadExams(portal) : null;
+  account=next;
+  role=next?.role;
+  db=data;
+  if (!role || !menus[role][page]) page='exams';
+}
 function render() {
-  if (firebaseStudent && account) {
+  if (firebasePortal && account && !account.name) {
     document.body.classList.add('signed-out');
     view.innerHTML=publicHeader()+`<section class="card"><a class="back-link" href="index.html">العودة إلى البوابات</a>
-      <h1>${account.name?'أهلاً، '+esc(account.name):'أكمل ملفك الشخصي'}</h1>
+      <h1>أكمل ملفك الشخصي</h1>
       <p dir="ltr">${esc(account.email)}</p>
-      ${account.name?'<p class="muted">حسابك محفوظ. الامتحانات رح تظهر هون لما تتفعّل.</p>':'<form id="profile-form"><label>الاسم الكامل<input name="name" maxlength="100" autocomplete="name" required></label><div><button class="primary">حفظ الملف الشخصي</button></div></form>'}
+      <form id="profile-form"><label>الاسم الكامل<input name="name" maxlength="100" autocomplete="name" required></label><div><button class="primary">حفظ الملف الشخصي</button></div></form>
       <button type="button" data-action="student-logout">تسجيل الخروج</button></section>`;
     return;
   }
@@ -94,7 +101,7 @@ function render() {
   document.querySelector('#account-name').textContent = account.name;
   document.querySelector('#account-role').textContent = roleNames[role];
   const navIcons = {exams:'grid',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',log:'clock'};
-  nav.innerHTML = Object.entries(menus[role]).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
+  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>!firebasePortal || !['results','analytics'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#section').textContent = menus[role][page] || 'تقديم الامتحان';
   const screens = {exams, results, bank, create, analytics, people, log, attempt};
   view.innerHTML = screens[page]();
@@ -130,6 +137,15 @@ function login(entry) {
 }
 function exams() {
   const student = role === 'student';
+  if (firebasePortal) {
+    const upcoming=db.exams.filter(exam=>Date.parse(exam.start)>Date.now()).length;
+    return hero('لوحة '+roleNames[role],student?'أهلاً، '+esc(account.name):'إدارة الامتحانات',
+      student?'تابع مواعيد الامتحانات المنشورة وشعبها.':'أنشئ الأسئلة وانشر الامتحانات مع مواعيدها.')+
+      `<div class="grid">${metric('الامتحانات المنشورة',db.exams.length)}${metric('المواعيد القادمة',upcoming)}${student?'':metric('أسئلة في البنك',db.questions.length)}</div>
+      <div class="row"><h2>${student?'جدول الامتحانات':'الامتحانات المنشورة'}</h2><div class="actions">${button('تحديث القائمة','refresh-exams')}${student?'':button('إنشاء امتحان','page','create',true)}</div></div>
+      ${db.exams.length?db.exams.map(exam=>`<section class="card"><span class="badge">${esc(exam.section)}</span><h3>${esc(exam.title)}</h3><p>${fmt(exam.start)}</p><p class="muted">${exam.questionCount} أسئلة · ${exam.duration} دقيقة · النجاح ${exam.pass}%</p></section>`).join(''):'<p class="card">ما في امتحانات منشورة حاليًا.</p>'}
+      ${student?'<p class="muted">تقديم الامتحانات من البوابة رح يتفعّل بمرحلة لاحقة.</p>':''}`;
+  }
   const resultCount = student ? db.results.filter(r=>r.student===account.id).length : db.results.length;
   return hero('لوحة '+roleNames[role], student?'أهلاً، '+esc(account.name):'إدارة الامتحانات',
     student?'قدّم الامتحانات المتاحة وراجع نتائجك بعد التسليم.':'أضف أسئلة لبنك الأسئلة، وجدول امتحانًا، وتابع نتائج الطلاب.') +
@@ -153,14 +169,16 @@ function bank() {
     <section class="card"><h2>الأسئلة المحفوظة</h2>${table(['السؤال','الإجابة الصحيحة','العلامة'], db.questions.map(q=>[esc(q.prompt),esc(q.options[q.correct]),q.points]))}</section>`;
 }
 function create() {
+  if (firebasePortal && !db.questions.length) return hero('أدوات المدرّس','إنشاء امتحان','أضف سؤالًا واحدًا على الأقل لبنك الأسئلة حتى تقدر تنشر امتحان.')+`<div class="card">${button('الانتقال إلى بنك الأسئلة','page','bank',true)}</div>`;
   return hero('أدوات المدرّس','إنشاء امتحان','حدّد قواعد الامتحان واختر الأسئلة من البنك.') +
     `<section class="card"><form id="exam-form"><label>اسم الامتحان<input name="title" required maxlength="100"></label>
+    ${firebasePortal?'<label>اسم الشعبة<input name="section" required maxlength="80"></label>':''}
     <div class="grid"><label>المدة بالدقائق<input type="number" name="duration" value="5" min="1" max="180" required></label>
     <label>علامة النجاح (%)<input type="number" name="pass" value="60" min="0" max="100" required></label>
-    <label>وقت البداية (اختياري)<input type="datetime-local" name="start"></label></div>
+    <label>وقت البداية${firebasePortal?'':' (اختياري)'}<input type="datetime-local" name="start" ${firebasePortal?'required':''}></label></div>
     <label class="choice"><input type="checkbox" name="shuffle"> ترتيب الأسئلة عشوائيًا لكل محاولة</label>
     <fieldset><legend>أسئلة الامتحان</legend>${db.questions.map(q=>`<label class="choice"><input type="checkbox" name="questions" value="${q.id}">${esc(q.prompt)} · ${q.points} علامة</label>`).join('')}</fieldset>
-    <div><button class="primary">حفظ الامتحان</button></div></form></section>`;
+    <div><button class="primary">${firebasePortal?'نشر الامتحان':'حفظ الامتحان'}</button></div></form></section>`;
 }
 async function start(id) {
   update(await api('attempt/start',{id}));
@@ -238,7 +256,8 @@ function download() {
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 document.querySelector('#logout').addEventListener('click',()=>perform(async()=>{
-  await api('logout',{});
+  if (firebasePortal) await firebase.logout();
+  else await api('logout',{});
   account=undefined;
   role=undefined;
   active='';
@@ -256,13 +275,14 @@ document.querySelector('#back').addEventListener('click',()=>{
 });
 document.addEventListener('click',event=>{
   const target=event.target.closest('button[data-action]');
-  if (firebaseStudent && target?.dataset.action==='student-logout') {
+  if (firebasePortal && target?.dataset.action==='student-logout') {
     perform(async()=>{await firebase.logout();account=undefined;toast('');render();});
     return;
   }
   if (!target || !account || busy) return;
   const {action,id}=target.dataset;
   toast('');
+  if (action==='refresh-exams') perform(async()=>{await loadFirebaseAccount(account);render();});
   if (action==='page') navigate(id);
   if (action==='start') perform(()=>start(id));
   if (action==='jump') {position=Number(id);render();}
@@ -307,12 +327,34 @@ document.addEventListener('submit',event=>{
   perform(async()=>{
     try {
       const values=Object.fromEntries(form);
-      if (firebaseStudent) {
-        firebase ??= await import('./firebase-student.js?v=1');
+      if (firebasePortal) {
+        firebase ??= await import('./firebase-student.js?v=2');
+        if (event.target.id==='question-form') {
+          const options=values.type==='boolean'?['صح','خطأ']:String(values.options).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+          const correct=Number(values.correct)-1;
+          const prompt=values.prompt.trim();
+          if (!prompt || options.length<2 || options.length>10 || !options[correct]) throw new Error('أدخل نص السؤال وخيارين على الأقل ورقم الإجابة الصحيحة.');
+          await firebase.addQuestion({prompt,options,correct,points:Number(values.points)});
+          await loadFirebaseAccount(account);
+          render();
+          toast('تم حفظ السؤال.');
+          return;
+        }
+        if (event.target.id==='exam-form') {
+          const ids=form.getAll('questions');
+          const title=values.title.trim();
+          const section=values.section.trim();
+          if (!title || !section || !ids.length || ids.length>100) throw new Error('أدخل الاسم والشعبة واختر من سؤال واحد إلى 100 سؤال.');
+          await firebase.publishExam({title,section,ids,start:new Date(values.start).toISOString(),duration:Number(values.duration),pass:Number(values.pass),shuffle:form.has('shuffle')});
+          await loadFirebaseAccount(account);
+          navigate('exams');
+          toast('تم نشر الامتحان.');
+          return;
+        }
         const action={'register-form':'register','login-form':'login','profile-form':'saveProfile'}[event.target.id];
         if (!action) return;
         try {
-          account=await firebase[action](action==='saveProfile'?values.name:values);
+          await loadFirebaseAccount(await firebase[action](action==='saveProfile'?values.name:values,portal));
           render();
           if (action==='register') {
             registration=false;
@@ -327,8 +369,8 @@ document.addEventListener('submit',event=>{
             'auth/too-many-requests':'حاول مرة ثانية بعد فترة.',
             'permission-denied':'تعذّر حفظ ملف الطالب في قاعدة البيانات.'
           };
-          account=await firebase.profile().catch(()=>null);
-          if (account) render();
+          const partial=await firebase.profile(portal).catch(()=>null);
+          if (partial && !partial.name) {await loadFirebaseAccount(partial);render();}
           throw new Error(messages[error.code] || error.message);
         }
         return;
@@ -368,9 +410,9 @@ document.addEventListener('submit',event=>{
 });
 render();
 perform(async()=>{
-  if (firebaseStudent) {
-    firebase=await import('./firebase-student.js?v=1');
-    account=await firebase.profile();
+  if (firebasePortal) {
+    firebase=await import('./firebase-student.js?v=2');
+    await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;
   }
