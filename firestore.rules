@@ -5,9 +5,22 @@ service cloud.firestore {
       return request.auth != null
         && exists(/databases/$(database)/documents/teacherRoles/$(request.auth.uid));
     }
-    // Teacher roles are provisioned by the Firebase project owner.
-    match /teacherRoles/{uid} {
+    function admin() {
+      return request.auth != null
+        && exists(/databases/$(database)/documents/adminRoles/$(request.auth.uid));
+    }
+    match /adminRoles/{uid} {
       allow get: if request.auth != null && request.auth.uid == uid;
+    }
+    // Only the project owner provisions administrators.
+    match /teacherRoles/{uid} {
+      allow get: if admin() || (request.auth != null && request.auth.uid == uid);
+      allow list: if admin();
+      allow create: if admin()
+        && request.resource.data.keys().hasOnly(['name'])
+        && request.resource.data.name is string
+        && request.resource.data.name == get(/databases/$(database)/documents/studentProfiles/$(uid)).data.name;
+      allow delete: if admin();
     }
     match /teacherBanks/{uid}/questions/{id} {
       function validQuestion() {
@@ -61,7 +74,8 @@ service cloud.firestore {
           && profile.email is string && profile.email == request.auth.token.email
           && profile.createdAt == request.time;
       }
-      allow get: if ownsProfile();
+      allow get: if ownsProfile() || admin();
+      allow list: if admin();
       allow create: if ownsProfile() && validProfile();
     }
   }

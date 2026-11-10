@@ -3,7 +3,7 @@ import {
   browserSessionPersistence, createUserWithEmailAndPassword, getAuth, setPersistence,
   signInWithEmailAndPassword, signOut
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
-import {addDoc, collection, doc, getDoc, getDocs, getFirestore, limit, query, runTransaction, serverTimestamp, Timestamp, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
+import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, query, runTransaction, serverTimestamp, setDoc, Timestamp, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
 
 const app=initializeApp({
   apiKey:'AIzaSyDi06jtrahqfRYpdRG523x3aJpqkullLsc',
@@ -19,10 +19,10 @@ await auth.authStateReady();
 export async function profile(portal='student') {
   const user=auth.currentUser;
   if (!user) return null;
-  if (portal==='teacher') {
-    const assigned=await getDoc(doc(db,'teacherRoles',user.uid));
+  if (portal==='teacher' || portal==='admin') {
+    const assigned=await getDoc(doc(db,portal==='teacher'?'teacherRoles':'adminRoles',user.uid));
     if (!assigned.exists()) return null;
-    return {id:user.uid,email:user.email,name:assigned.data().name || user.email,role:'teacher'};
+    return {id:user.uid,email:user.email,name:assigned.data().name || user.email,role:portal};
   }
   const ref=doc(db,'studentProfiles',user.uid);
   const saved=await getDoc(ref);
@@ -54,12 +54,27 @@ export async function login({email,password},portal) {
   const account=await profile(portal);
   if (!account) {
     await signOut(auth);
-    throw new Error('هذا الحساب يحتاج تفعيل صلاحية المدرّس أولًا.');
+    throw new Error(portal==='admin'?'هذا الحساب يحتاج تفعيل صلاحية المدير أولًا.':'هذا الحساب يحتاج تفعيل صلاحية المدرّس أولًا.');
   }
   return account;
 }
 
 export function logout() { return signOut(auth); }
+
+export async function loadPeople() {
+  const [profiles,teachers]=await Promise.all([
+    getDocs(collection(db,'studentProfiles')),getDocs(collection(db,'teacherRoles'))
+  ]);
+  const assigned=new Set(teachers.docs.map(item=>item.id));
+  return {people:profiles.docs.map(item=>({...item.data(),id:item.id,teacher:assigned.has(item.id)}))
+    .sort((a,b)=>a.name.localeCompare(b.name,'ar'))};
+}
+
+export async function setTeacher(person, enabled) {
+  const ref=doc(db,'teacherRoles',person.id);
+  if (enabled) await setDoc(ref,{name:person.name});
+  else await deleteDoc(ref);
+}
 
 function bank() {
   return collection(db,'teacherBanks',auth.currentUser.uid,'questions');
