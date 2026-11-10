@@ -1,0 +1,20 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Student profiles contain only a name, the signed-in email, and a creation timestamp.
+    match /studentProfiles/{uid} {
+      function ownsProfile() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+      function validProfile() {
+        let profile = request.resource.data;
+        return profile.keys().hasOnly(['name', 'email', 'createdAt'])
+          && profile.name is string && profile.name.size() > 0 && profile.name.size() <= 100
+          && profile.email is string && profile.email == request.auth.token.email
+          && profile.createdAt == request.time;
+      }
+      allow get: if ownsProfile();
+      allow create: if ownsProfile() && validProfile();
+    }
+  }
+}

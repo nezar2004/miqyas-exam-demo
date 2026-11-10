@@ -1,7 +1,10 @@
 const params = new URLSearchParams(location.search);
 const portal = params.get('portal');
-const staticPreview = location.hostname==='nezar2004.github.io';
-const registration = portal==='student' && params.has('register');
+const pagesHost = location.hostname==='nezar2004.github.io';
+const firebaseStudent = pagesHost && portal==='student';
+const staticPreview = pagesHost && !firebaseStudent;
+let firebase;
+let registration = portal==='student' && params.has('register');
 let account, role, db;
 let busy=false;
 const previousPages=[];
@@ -71,6 +74,15 @@ function navigate(next) {
 }
 function toast(message) { notice.textContent = message; }
 function render() {
+  if (firebaseStudent && account) {
+    document.body.classList.add('signed-out');
+    view.innerHTML=publicHeader()+`<section class="card"><a class="back-link" href="index.html">العودة إلى البوابات</a>
+      <h1>${account.name?'أهلاً، '+esc(account.name):'أكمل ملفك الشخصي'}</h1>
+      <p dir="ltr">${esc(account.email)}</p>
+      ${account.name?'<p class="muted">حسابك محفوظ. الامتحانات رح تظهر هون لما تتفعّل.</p>':'<form id="profile-form"><label>الاسم الكامل<input name="name" maxlength="100" autocomplete="name" required></label><div><button class="primary">حفظ الملف الشخصي</button></div></form>'}
+      <button type="button" data-action="student-logout">تسجيل الخروج</button></section>`;
+    return;
+  }
   document.body.classList.toggle('signed-out', !account);
   if (!account) {
     const entry = Object.hasOwn(portals,portal) ? portals[portal] : null;
@@ -244,6 +256,10 @@ document.querySelector('#back').addEventListener('click',()=>{
 });
 document.addEventListener('click',event=>{
   const target=event.target.closest('button[data-action]');
+  if (firebaseStudent && target?.dataset.action==='student-logout') {
+    perform(async()=>{await firebase.logout();account=undefined;toast('');render();});
+    return;
+  }
   if (!target || !account || busy) return;
   const {action,id}=target.dataset;
   toast('');
@@ -291,6 +307,32 @@ document.addEventListener('submit',event=>{
   perform(async()=>{
     try {
       const values=Object.fromEntries(form);
+      if (firebaseStudent) {
+        firebase ??= await import('./firebase-student.js?v=1');
+        const action={'register-form':'register','login-form':'login','profile-form':'saveProfile'}[event.target.id];
+        if (!action) return;
+        try {
+          account=await firebase[action](action==='saveProfile'?values.name:values);
+          render();
+          if (action==='register') {
+            registration=false;
+            history.replaceState(null,'','?portal=student');
+          }
+          if (action!=='login') toast('تم حفظ حسابك في مقياس.');
+        } catch (error) {
+          const messages={
+            'auth/email-already-in-use':'هذا البريد مسجّل. ارجع إلى تسجيل الدخول.',
+            'auth/invalid-credential':'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
+            'auth/network-request-failed':'تعذّر الاتصال. جرّب مرة ثانية.',
+            'auth/too-many-requests':'حاول مرة ثانية بعد فترة.',
+            'permission-denied':'تعذّر حفظ ملف الطالب في قاعدة البيانات.'
+          };
+          account=await firebase.profile().catch(()=>null);
+          if (account) render();
+          throw new Error(messages[error.code] || error.message);
+        }
+        return;
+      }
       switch (event.target.id) {
         case 'register-form':
           await api('register',values);
@@ -326,6 +368,12 @@ document.addEventListener('submit',event=>{
 });
 render();
 perform(async()=>{
+  if (firebaseStudent) {
+    firebase=await import('./firebase-student.js?v=1');
+    account=await firebase.profile();
+    render();
+    return;
+  }
   if (staticPreview || !Object.hasOwn(portals,portal)) return;
   update(await api('state'));
   if (account) page=Object.keys(menus[role])[0];
