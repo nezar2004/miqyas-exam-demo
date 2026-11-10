@@ -30,7 +30,7 @@ const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 const menus = {
   student:{exams:'الامتحانات', results:'نتائجي'},
   teacher:{exams:'إدارة الامتحانات', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
-  admin:{people:'حسابات المستخدمين', log:'سجل النشاط'}
+  admin:{people:'حسابات المستخدمين', addTeacher:'إضافة مدرّس', log:'سجل النشاط'}
 };
 const view = document.querySelector('#view');
 const nav = document.querySelector('#nav');
@@ -100,10 +100,10 @@ function render() {
   document.title = portals[role].title+' | مقياس';
   document.querySelector('#account-name').textContent = account.name;
   document.querySelector('#account-role').textContent = roleNames[role];
-  const navIcons = {exams:'grid',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',log:'clock'};
-  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>!firebasePortal || !['results','analytics','log'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
+  const navIcons = {exams:'grid',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
+  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['results','analytics','log'].includes(id):id!=='addTeacher').map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#section').textContent = menus[role][page] || 'تقديم الامتحان';
-  const screens = {exams, results, bank, create, analytics, people, log, attempt};
+  const screens = {exams, results, bank, create, analytics, people, addTeacher, log, attempt};
   view.innerHTML = screens[page]();
   tick();
 }
@@ -236,13 +236,29 @@ function analytics() {
     <section class="card"><div class="row"><h2>سجل التسليمات</h2>${r.length?button('تصدير CSV','export'):''}</div>${r.length?table(['الطالب','الامتحان','العلامة','النتيجة','وقت التسليم'],r.map(x=>[esc(studentName(x)),esc(x.title),x.percent+'%',x.passed?'ناجح':'لم ينجح',fmt(x.at)])):'<p>لا يوجد تسليمات بعد.</p>'}</section>`;
 }
 function people() {
-  if (firebasePortal) return hero('لوحة الإدارة','إدارة المدرّسين','بعد ما يسجّل المدرّس حسابه من بوابة الطالب، فعّل صلاحية المدرّس من القائمة.')+
-    `<div class="grid">${metric('الحسابات المسجّلة',db.people.length)}${metric('المدرّسون المفعّلون',db.people.filter(p=>p.teacher).length)}</div>
-    <section class="card"><div class="row"><h2>الحسابات المسجّلة</h2>${button('تحديث القائمة','refresh-exams')}</div>
-    ${db.people.length?table(['الاسم','البريد','صلاحية المدرّس','الإجراء'],db.people.map(p=>[esc(p.name),esc(p.email),p.teacher?'مفعّلة':'غير مفعّلة',button(p.teacher?'إلغاء صلاحية المدرّس':'تفعيل صلاحية المدرّس','set-teacher',p.id,!p.teacher)])):'<p>لا توجد حسابات مسجّلة بعد.</p>'}</section>`;
+  if (firebasePortal) {
+    const directory=(title,entries,manage=false)=>`<section class="card"><h2>${title}</h2>
+      ${entries.length?table(manage?['الاسم','البريد','الإجراء']:['الاسم','البريد'],entries.map(person=>[
+        esc(person.name || '—'),esc(person.email || '—'),
+        ...(manage?[button('إلغاء صلاحية المدرّس','remove-teacher',person.id)]:[])
+      ])):'<p class="muted">ما في حسابات بهالقائمة حاليًا.</p>'}</section>`;
+    return hero('لوحة الإدارة','الحسابات والصلاحيات','راجع الطلاب والمدرّسين والمديرين وأدر صلاحية التدريس.')+
+      `<div class="grid">${metric('الطلاب',db.students.length)}${metric('المدرّسون',db.teachers.length)}${metric('المديرون',db.admins.length)}</div>
+      <div class="actions">${button('إضافة مدرّس','page','addTeacher',true)}${button('تحديث القوائم','refresh-exams')}</div>
+      <br>${directory('المدرّسون',db.teachers,true)}${directory('الطلاب',db.students)}${directory('المديرون',db.admins)}`;
+  }
   return hero('لوحة الإدارة','حسابات المستخدمين','أضف المدرّسين وأدر حالة الحسابات.')+
     `<section class="card"><h2>إضافة مدرّس</h2><form id="teacher-form">${fields(true)}<div><button class="primary">حفظ حساب المدرّس</button></div></form></section>
     <section class="card">${table(['الاسم','البريد','الدور','الحالة','الإجراء'],db.people.map(p=>[esc(p.name),esc(p.email),roleNames[p.role],p.enabled?'مفعّل':'موقوف',p.role==='admin'?'—':button(p.enabled?'إيقاف':'تفعيل','toggle',p.id)]))}</section>`;
+}
+function addTeacher() {
+  return hero('لوحة الإدارة','إضافة مدرّس','اختر حسابًا مسجّلًا لإعطائه صلاحية الدخول إلى بوابة المدرّس.')+
+    `<section class="card">${db.students.length?`<form id="assign-teacher-form">
+      <label>الحساب<select name="accountId" required><option value="">اختر الاسم والبريد</option>
+      ${db.students.map(person=>`<option value="${esc(person.id)}">${esc(person.name)} · ${esc(person.email)}</option>`).join('')}</select></label>
+      <div class="actions"><button class="primary">إضافة مدرّس</button>${button('رجوع للحسابات','page','people')}</div>
+    </form>`:'<p>ما في حساب متاح للإضافة حاليًا. خلي المدرّس يسجّل حساب أولًا.</p>'}
+    <p><a class="back-link" href="?portal=student&amp;register=1" target="_blank" rel="noopener">فتح صفحة إنشاء الحساب</a></p></section>`;
 }
 function log() {
   return hero('لوحة الإدارة','سجل النشاط','راجع عمليات الدخول وتغييرات الحسابات والامتحانات.')+
@@ -287,14 +303,14 @@ document.addEventListener('click',event=>{
   const {action,id}=target.dataset;
   toast('');
   if (action==='refresh-exams') perform(async()=>{await loadFirebaseAccount(account);render();});
-  if (action==='set-teacher' && firebasePortal && role==='admin') {
-    const person=db.people.find(item=>item.id===id);
-    if (person && confirm((person.teacher?'إلغاء صلاحية المدرّس عن ':'تفعيل صلاحية المدرّس لـ ')+person.name+'؟')) {
+  if (action==='remove-teacher' && firebasePortal && role==='admin') {
+    const person=db.teachers.find(item=>item.id===id);
+    if (person && confirm('إلغاء صلاحية المدرّس عن '+person.name+'؟')) {
       perform(async()=>{
-        await firebase.setTeacher(person,!person.teacher);
+        await firebase.setTeacher(person,false);
         await loadFirebaseAccount(account);
         render();
-        toast(person.teacher?'تم إلغاء صلاحية المدرّس.':'تم تفعيل صلاحية المدرّس.');
+        toast('تم إلغاء صلاحية المدرّس.');
       });
     }
   }
@@ -343,7 +359,16 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=3');
+        firebase ??= await import('./firebase-student.js?v=4');
+        if (event.target.id==='assign-teacher-form' && role==='admin') {
+          const person=db.students.find(item=>item.id===values.accountId);
+          if (!person) throw new Error('اختر حسابًا مسجّلًا من القائمة.');
+          await firebase.setTeacher(person,true);
+          await loadFirebaseAccount(account);
+          navigate('people');
+          toast('تمت إضافة المدرّس.');
+          return;
+        }
         if (event.target.id==='question-form') {
           const options=values.type==='boolean'?['صح','خطأ']:String(values.options).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
           const correct=Number(values.correct)-1;
@@ -426,7 +451,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=3');
+    firebase=await import('./firebase-student.js?v=4');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

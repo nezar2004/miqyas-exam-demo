@@ -11,6 +11,7 @@ service cloud.firestore {
     }
     match /adminRoles/{uid} {
       allow get: if request.auth != null && request.auth.uid == uid;
+      allow list: if admin();
     }
     // Only the project owner provisions administrators.
     match /teacherRoles/{uid} {

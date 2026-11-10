@@ -62,12 +62,18 @@ export async function login({email,password},portal) {
 export function logout() { return signOut(auth); }
 
 export async function loadPeople() {
-  const [profiles,teachers]=await Promise.all([
-    getDocs(collection(db,'studentProfiles')),getDocs(collection(db,'teacherRoles'))
+  const [profiles,teachers,admins]=await Promise.all([
+    getDocs(collection(db,'studentProfiles')),getDocs(collection(db,'teacherRoles')),
+    getDocs(collection(db,'adminRoles'))
   ]);
-  const assigned=new Set(teachers.docs.map(item=>item.id));
-  return {people:profiles.docs.map(item=>({...item.data(),id:item.id,teacher:assigned.has(item.id)}))
-    .sort((a,b)=>a.name.localeCompare(b.name,'ar'))};
+  const registered=new Map(profiles.docs.map(item=>[item.id,{...item.data(),id:item.id}]));
+  const roleAccounts=records=>records.docs.map(item=>({...registered.get(item.id),...item.data(),id:item.id}));
+  const teacherAccounts=roleAccounts(teachers);
+  const adminAccounts=roleAccounts(admins);
+  const assigned=new Set([...teacherAccounts,...adminAccounts].map(person=>person.id));
+  const students=[...registered.values()].filter(person=>!assigned.has(person.id));
+  const byName=(a,b)=>(a.name || '').localeCompare(b.name || '','ar');
+  return {students:students.sort(byName),teachers:teacherAccounts.sort(byName),admins:adminAccounts.sort(byName)};
 }
 
 export async function setTeacher(person, enabled) {
