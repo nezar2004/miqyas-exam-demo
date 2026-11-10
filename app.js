@@ -1,42 +1,18 @@
-const key = 'miqyas-demo-v1';
-const sample = {
-  questions: [
-    {id:'q1', prompt:'أي مخطط يوضّح علاقة النظام بالجهات الخارجية؟', options:['مخطط السياق','مخطط العلاقات','مخطط الفئات'], correct:0, points:2},
-    {id:'q2', prompt:'الحفظ التلقائي يساعد الطالب على استعادة إجاباته.', options:['صح','خطأ'], correct:0, points:1},
-    {id:'q3', prompt:'أي دور ينشئ الامتحان ويحدد علامته؟', options:['الطالب','المدرّس','الزائر'], correct:1, points:2}
-  ],
-  exams:[{id:'e1', title:'أساسيات تحليل النظم', duration:5, pass:60, start:'', shuffle:false, ids:['q1','q2','q3']}],
-  people:[
-    {id:'nour', name:'نور أحمد', role:'student', enabled:true},
-    {id:'sara', name:'سارة محمود', role:'student', enabled:true},
-    {id:'yousef', name:'يوسف سامر', role:'student', enabled:true},
-    {id:'layan', name:'ليان خالد', role:'teacher', enabled:true},
-    {id:'omar', name:'عمر علي', role:'admin', enabled:true}
-  ],
-  attempts:{}, results:[], log:[]
-};
-let db = JSON.parse(localStorage.getItem(key) || 'null') || sample;
-if (!db.people[0].id) {
-  const previous = db.people;
-  db.people = sample.people.map(person=>({...person,enabled:previous.find(item=>item.name===person.name)?.enabled ?? true}));
-  for (const [examId, attempt] of Object.entries(db.attempts)) {
-    db.attempts['nour/'+examId] = {...attempt,examId,student:'nour'};
-    delete db.attempts[examId];
-  }
-  db.results.forEach(result=>{result.student='nour';});
-  localStorage.setItem(key,JSON.stringify(db));
-}
-const portal = new URLSearchParams(location.search).get('portal');
-let account = db.people.find(person=>person.enabled && person.role===portal && person.id===sessionStorage.getItem('miqyas-account'));
-let role = account?.role;
+const params = new URLSearchParams(location.search);
+const portal = params.get('portal');
+const staticPreview = location.hostname==='nezar2004.github.io';
+const registration = portal==='student' && params.has('register');
+let account, role, db;
+let busy=false;
+const previousPages=[];
 let page = role==='admin'?'people':'exams';
 let active = '';
 let position = 0;
 const roleNames = {student:'طالب', teacher:'مدرّس', admin:'مدير النظام'};
 const portals = {
-  student:{title:'بوابة الطالب', code:'01', icon:'cap', detail:'قدّم امتحاناتك وتابع نتائجك في مكان واحد.', demo:'nour'},
-  teacher:{title:'بوابة المدرّس', code:'02', icon:'paper', detail:'أنشئ التقييمات، وجدول الامتحانات، وتابع أداء طلابك.', demo:'layan'},
-  admin:{title:'بوابة الإدارة', code:'03', icon:'shield', detail:'أدر الحسابات وراجع سجل النشاط في المنصة.', demo:'omar'}
+  student:{title:'بوابة الطالب', code:'01', icon:'cap', detail:'قدّم امتحاناتك وتابع نتائجك في مكان واحد.'},
+  teacher:{title:'بوابة المدرّس', code:'02', icon:'paper', detail:'أنشئ التقييمات، وجدول الامتحانات، وتابع أداء طلابك.'},
+  admin:{title:'بوابة الإدارة', code:'03', icon:'shield', detail:'أدر الحسابات وراجع سجل النشاط في المنصة.'}
 };
 const paths = {
   cap:'<path d="m2 10 10-5 10 5-10 5-10-5Zm4 2v5c4 3 8 3 12 0v-5m4-2v6"/>',
@@ -51,7 +27,7 @@ const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 const menus = {
   student:{exams:'الامتحانات', results:'نتائجي'},
   teacher:{exams:'إدارة الامتحانات', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
-  admin:{people:'الحسابات التجريبية', log:'سجل النشاط'}
+  admin:{people:'حسابات المستخدمين', log:'سجل النشاط'}
 };
 const view = document.querySelector('#view');
 const nav = document.querySelector('#nav');
@@ -63,11 +39,36 @@ const metric = (label, value) => `<div class="card metric-card"><span class="met
 const table = (headers, rows) => `<div class="table"><table><thead><tr>${headers.map(x=>`<th scope="col">${x}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(x=>`<td>${x}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 const fmt = value => new Date(value).toLocaleString('ar-JO', {dateStyle:'medium', timeStyle:'short'});
 const completed = (id, student = account?.id) => db.results.find(result=>result.id===id && result.student===student);
-const studentName = id => db.people.find(person=>person.id===id)?.name || id;
-const attemptKey = id => account.id+'/'+id;
+const studentName = r => r.studentName || r.student;
 const question = id => db.questions.find(item=>item.id===id);
-function save() { localStorage.setItem(key, JSON.stringify(db)); }
-function record(label) { db.log.unshift({label, at:Date.now()}); save(); }
+const attemptKey = id => id;
+async function api(path, body) {
+  const response = await fetch('./api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const payload = await response.json().catch(()=>{throw new Error('خادم المنصة غير متاح.');});
+  if (!response.ok) {
+    if (response.status===401 && account) {account=undefined; role=undefined; render();}
+    throw new Error(payload.error);
+  }
+  return payload;
+}
+function update(payload) {
+  account=payload.account?.role===portal?payload.account:undefined;
+  role=account?.role;
+  db=payload.db;
+}
+async function perform(work) {
+  if (busy) return;
+  busy=true;
+  view.setAttribute('aria-busy','true');
+  try {await work();}
+  catch(error) {toast(error.message);}
+  finally {busy=false; view.removeAttribute('aria-busy');}
+}
+function navigate(next) {
+  if (next!==page) previousPages.push(page);
+  page=next;
+  render();
+}
 function toast(message) { notice.textContent = message; }
 function render() {
   document.body.classList.toggle('signed-out', !account);
@@ -88,7 +89,7 @@ function render() {
   tick();
 }
 function publicHeader() {
-  return `<header class="public-head"><a class="brand" href="./"><span class="logo">${icon('grid')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a><span class="public-label">منصة التقييم الرقمي</span></header>`;
+  return `<header class="public-head"><a class="brand" href="index.html"><span class="logo">${icon('grid')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a><span class="public-label">منصة التقييم الرقمي</span></header>`;
 }
 function illustration() {
   return `<div class="art" aria-hidden="true"><div class="art-orbit"></div><div class="art-sheet"><div class="art-top"><i></i><i></i><i></i></div><div class="art-content"><div class="art-line"></div><div class="art-line short"></div><div class="art-chart"><i></i><i></i><i></i><i></i><i></i></div></div></div><div class="art-check">${icon('shield')}</div></div>`;
@@ -96,24 +97,30 @@ function illustration() {
 function gateway() {
   return publicHeader()+`<section class="gateway-hero"><div><span class="kicker">MIQYAS / ASSESSMENT PLATFORM</span><h1>منصة واحدة.<br><em>لكل مرحلة من التقييم.</em></h1><p>أنشئ امتحاناتك، قدّمها، وتابع نتائجها من بوابة مخصصة لكل دور.</p></div>${illustration()}</section>
     <section class="portal-section"><div class="row"><h2>اختر بوابتك</h2><span class="muted">٣ مساحات عمل</span></div><div class="portal-grid">${Object.entries(portals).map(([id,item])=>`<a class="portal-card" href="?portal=${id}"><span class="row"><span class="portal-icon ${id}">${icon(item.icon)}</span><small dir="ltr">${item.code}</small></span><h3>${item.title}</h3><p>${item.detail}</p><span class="portal-link">الانتقال إلى البوابة ${icon('arrow')}</span></a>`).join('')}</div></section>
-    <footer class="public-footer"><span>مقياس · منصة التقييم الرقمي</span><span>بيئة تجريبية</span></footer>`;
+    <footer class="public-footer"><span>مقياس · منصة التقييم الرقمي</span><span>منصة الامتحانات</span></footer>`;
+}
+function fields(includeName) {
+  return `${includeName?'<label>الاسم الكامل<input name="name" maxlength="100" autocomplete="name" required></label>':''}
+    <label>البريد الإلكتروني<input name="email" type="email" maxlength="254" required autocomplete="username" dir="ltr"></label>
+    <label>كلمة المرور<input name="password" type="password" maxlength="128" ${includeName?'minlength="12"':''} required autocomplete="${includeName?'new-password':'current-password'}" dir="ltr">${includeName?'<small>12 حرفًا على الأقل</small>':''}</label>`;
 }
 function login(entry) {
-  const demo = db.people.find(person=>person.id===entry.demo);
-  return publicHeader()+`<div class="login-layout"><section class="login-panel"><a class="back-link" href="./">العودة إلى البوابات ${icon('arrow')}</a><span class="portal-icon ${portal}">${icon(entry.icon)}</span><h1>${entry.title}</h1><p class="muted">${entry.detail}</p>
-    <form id="login-form">
-    <label>اسم المستخدم<input name="username" required autocomplete="username" placeholder="username" dir="ltr"></label>
-    <label>كلمة المرور<input name="password" type="password" required autocomplete="current-password" placeholder="••••••••" dir="ltr"></label>
-    <button class="primary">تسجيل الدخول</button></form>
-    <details class="demo-box"><summary>الحسابات التجريبية</summary><p class="muted">كلمة المرور <b dir="ltr">Demo1234</b></p><div class="credentials">${db.people.filter(p=>p.role===portal).map(p=>button(esc(p.name)+' · '+esc(p.id),'fill-login',p.id)).join('')}</div></details>
-    <button class="demo-button" data-action="fill-login" data-id="${demo.id}" type="button">تعبئة بيانات حساب ${esc(demo.name)}</button></section>
+  const links=portal!=='student'?'':registration
+    ? '<a class="back-link" href="?portal=student">رجوع إلى تسجيل الدخول</a>'
+    : '<a class="back-link" href="?portal=student&amp;register=1">إنشاء حساب طالب</a>';
+  return publicHeader()+`<div class="login-layout"><section class="login-panel"><a class="back-link" href="index.html">العودة إلى البوابات ${icon('arrow')}</a><span class="portal-icon ${portal}">${icon(entry.icon)}</span><h1>${registration?'إنشاء حساب طالب':entry.title}</h1><p class="muted">${entry.detail}</p>
+    <form id="${registration?'register-form':'login-form'}">
+      ${staticPreview?'<p class="badge warn" role="status">إنشاء الحساب وتسجيل الدخول رح يتفعّلوا بعد نشر خادم مقياس.</p>':''}
+      <fieldset ${staticPreview?'disabled':''}>${fields(registration)}</fieldset>
+      <button class="primary" ${staticPreview?'disabled':''}>${registration?'إنشاء الحساب':'تسجيل الدخول'}</button>
+    </form>${links}</section>
     <aside class="login-story"><span class="kicker">MIQYAS / ${entry.code}</span><h2>${entry.title}</h2><p>${entry.detail}</p>${illustration()}<span class="story-foot">مساحة العمل المخصصة · مقياس</span></aside></div>`;
 }
 function exams() {
   const student = role === 'student';
   const resultCount = student ? db.results.filter(r=>r.student===account.id).length : db.results.length;
   return hero('لوحة '+roleNames[role], student?'أهلاً، '+esc(account.name):'إدارة الامتحانات',
-    student?'ابدأ بالامتحان التجريبي وشوف نتيجتك فور التسليم.':'أضف أسئلة لبنك الأسئلة، وجدول امتحانًا، وتابع نتائج الطلاب.') +
+    student?'قدّم الامتحانات المتاحة وراجع نتائجك بعد التسليم.':'أضف أسئلة لبنك الأسئلة، وجدول امتحانًا، وتابع نتائج الطلاب.') +
     `<div class="grid">${metric('الامتحانات',db.exams.length)}${metric('الامتحانات المقدّمة',resultCount)}${metric(student?'بانتظار التقديم':'أسئلة في البنك',student?db.exams.length-resultCount:db.questions.length)}</div>
     <div class="row"><h2>${student?'امتحاناتك':'قائمة الامتحانات'}</h2>${student?'':button('إنشاء امتحان','page','create',true)}</div>`+
     db.exams.map(exam=>{
@@ -143,26 +150,11 @@ function create() {
     <fieldset><legend>أسئلة الامتحان</legend>${db.questions.map(q=>`<label class="choice"><input type="checkbox" name="questions" value="${q.id}">${esc(q.prompt)} · ${q.points} علامة</label>`).join('')}</fieldset>
     <div><button class="primary">حفظ الامتحان</button></div></form></section>`;
 }
-function shuffled(ids) {
-  const order = [...ids];
-  for (let i=order.length-1;i>0;i--) {
-    const j = Math.floor(Math.random()*(i+1));
-    [order[i],order[j]] = [order[j],order[i]];
-  }
-  return order;
-}
-function start(id) {
-  if (role !== 'student') return;
-  const exam = db.exams.find(item=>item.id===id);
-  if (!exam || completed(id) || (exam.start && Date.parse(exam.start)>Date.now())) return;
-  active = attemptKey(id);
-  if (!db.attempts[active]) {
-    db.attempts[active] = {examId:id, student:account.id, order:exam.shuffle?shuffled(exam.ids):exam.ids, answers:{}, review:{}, deadline:Date.now()+exam.duration*60000};
-    record(account.name+' بدأ امتحان '+exam.title);
-  }
-  position = 0;
-  page = 'attempt';
-  render();
+async function start(id) {
+  update(await api('attempt/start',{id}));
+  active=id;
+  position=0;
+  navigate(db.attempts[id]?'attempt':'results');
 }
 function attempt() {
   const current = db.attempts[active];
@@ -178,56 +170,48 @@ function attempt() {
     ${q.options.map((choice,index)=>`<label class="choice"><input type="radio" name="answer" value="${index}" ${current.answers[q.id]===index?'checked':''}>${esc(choice)}</label>`).join('')}</fieldset>
     <div class="row"><div class="actions">${position>0?button('السابق','jump',position-1):''}${position+1<current.order.length?button('التالي','jump',position+1,true):''}${button(current.review[q.id]?'إزالة علامة المراجعة':'علّم للمراجعة','review')}</div>${button('تسليم الامتحان','finish')}</div></section>`;
 }
-function submit(id, expired) {
-  const current = db.attempts[id];
-  if (!current || completed(current.examId,current.student)) return;
-  const exam = db.exams.find(item=>item.id===current.examId);
-  const details = current.order.map(question).map(q=>({prompt:q.prompt, selected:q.options[current.answers[q.id]], correct:q.options[q.correct], points:q.points, earned:current.answers[q.id]===q.correct?q.points:0}));
-  const earned = details.reduce((sum,q)=>sum+q.earned,0);
-  const total = details.reduce((sum,q)=>sum+q.points,0);
-  const percent = Math.round(1000*earned/total)/10;
-  db.results.unshift({id:exam.id,student:current.student,title:exam.title,details,earned,total,percent,passed:100*earned/total>=exam.pass,at:Date.now()});
-  delete db.attempts[id];
-  record((expired?'انتهى وقت امتحان ':'سلّم الطالب امتحان ')+exam.title);
+async function finishAttempt() {
+  update(await api('attempt/finish',{id:active}));
+  page='results';
+  render();
+  toast('تم تسليم الامتحان.');
 }
+let nextExpiryCheck=0;
 function tick() {
-  const expired = Object.keys(db.attempts).filter(id=>db.attempts[id].deadline<=Date.now());
-  expired.forEach(id=>submit(id,true));
-  if (expired.includes(active) && page==='attempt') {
-    page = 'results';
-    render();
-    toast('انتهى الوقت وتم تسليم الامتحان تلقائيًا.');
-  }
-  const timer = document.querySelector('#timer');
-  if (timer && db.attempts[active]) {
-    const seconds = Math.max(0, Math.ceil((db.attempts[active].deadline-Date.now())/1000));
-    timer.textContent = [Math.floor(seconds/60), seconds%60].map(n=>String(n).padStart(2,'0')).join(':');
+  const timer=document.querySelector('#timer');
+  if (!timer || !db?.attempts[active]) return;
+  const seconds=Math.max(0,Math.ceil((db.attempts[active].deadline-Date.now())/1000));
+  timer.textContent=[Math.floor(seconds/60),seconds%60].map(n=>String(n).padStart(2,'0')).join(':');
+  if (!seconds && !busy && Date.now()>=nextExpiryCheck) {
+    nextExpiryCheck=Date.now()+5000;
+    perform(finishAttempt);
   }
 }
 function results() {
   const own = db.results.filter(result=>result.student===account.id);
-  return hero('لوحة الطالب','نتائج الامتحانات','راجع علامتك والإجابة الصحيحة لكل سؤال بعد التسليم.')+
+  return hero('لوحة الطالب','نتائج الامتحانات','راجع علامتك والإجابات التي سلّمتها.')+
     (own.length ? own.map(r=>`<section class="card"><div class="row"><h2>${esc(r.title)}</h2><span class="badge ${r.passed?'ok':'warn'}">${r.passed?'ناجح':'لم ينجح'} · ${r.earned}/${r.total} · ${r.percent}%</span></div>
-    ${table(['السؤال','إجابتك','الإجابة الصحيحة','العلامة'],r.details.map(q=>[esc(q.prompt),esc(q.selected || 'بدون إجابة'),esc(q.correct),q.earned+'/'+q.points]))}</section>`).join('') : '<p class="card">ما في نتائج بعد. قدّم امتحانًا لتظهر نتيجتك هون.</p>');
+    ${table(['السؤال','إجابتك','العلامة'],r.details.map(q=>[esc(q.prompt),esc(q.selected || 'بدون إجابة'),q.earned+'/'+q.points]))}</section>`).join('') : '<p class="card">ما في نتائج بعد. قدّم امتحانًا لتظهر نتيجتك هون.</p>');
 }
 function analytics() {
   const r = db.results;
   const average = r.length ? Math.round(r.reduce((sum,item)=>sum+item.percent,0)/r.length)+'%' : '—';
   const pass = r.length ? Math.round(r.filter(item=>item.passed).length*100/r.length)+'%' : '—';
-  return hero('لوحة المدرّس','تحليل النتائج','اطّلع على متوسط الدرجات ونسبة النجاح وتوزيع العلامات في المحاولات التجريبية.')+
+  return hero('لوحة المدرّس','تحليل النتائج','اطّلع على متوسط الدرجات ونسبة النجاح وتوزيع العلامات في امتحاناتك.')+
     `<div class="grid">${metric('عدد التسليمات',r.length)}${metric('متوسط العلامات',average)}${metric('نسبة النجاح',pass)}</div>
     <section class="card"><h2>توزيع الدرجات</h2>${[[0,49],[50,74],[75,100]].map(([min,max])=>{
       const count = r.filter(item=>item.percent>=min && item.percent<(max===100?101:max+1)).length;
       return `<div class="row"><span dir="ltr">${min}–${max}%</span><strong>${count}</strong></div><progress aria-label="عدد العلامات من ${min} إلى ${max}" max="${r.length||1}" value="${count}"></progress>`;
     }).join('')}</section>
-    <section class="card"><div class="row"><h2>سجل التسليمات</h2>${r.length?button('تصدير CSV','export'):''}</div>${r.length?table(['الطالب','الامتحان','العلامة','النتيجة','وقت التسليم'],r.map(x=>[esc(studentName(x.student)),esc(x.title),x.percent+'%',x.passed?'ناجح':'لم ينجح',fmt(x.at)])):'<p>لا يوجد تسليمات بعد.</p>'}</section>`;
+    <section class="card"><div class="row"><h2>سجل التسليمات</h2>${r.length?button('تصدير CSV','export'):''}</div>${r.length?table(['الطالب','الامتحان','العلامة','النتيجة','وقت التسليم'],r.map(x=>[esc(studentName(x)),esc(x.title),x.percent+'%',x.passed?'ناجح':'لم ينجح',fmt(x.at)])):'<p>لا يوجد تسليمات بعد.</p>'}</section>`;
 }
 function people() {
-  return hero('لوحة الإدارة','حسابات العرض','اطّلع على الأدوار وسجّل تغييرات حالة الحسابات التجريبية.')+
-    `<section class="card">${table(['الاسم','الدور','الحالة','الإجراء'],db.people.map((p,index)=>[esc(p.name),roleNames[p.role],p.enabled?'مفعّل':'موقوف',button(p.enabled?'إيقاف':'تفعيل','toggle',index)]))}</section>`;
+  return hero('لوحة الإدارة','حسابات المستخدمين','أضف المدرّسين وأدر حالة الحسابات.')+
+    `<section class="card"><h2>إضافة مدرّس</h2><form id="teacher-form">${fields(true)}<div><button class="primary">حفظ حساب المدرّس</button></div></form></section>
+    <section class="card">${table(['الاسم','البريد','الدور','الحالة','الإجراء'],db.people.map(p=>[esc(p.name),esc(p.email),roleNames[p.role],p.enabled?'مفعّل':'موقوف',p.role==='admin'?'—':button(p.enabled?'إيقاف':'تفعيل','toggle',p.id)]))}</section>`;
 }
 function log() {
-  return hero('لوحة الإدارة','سجل النشاط','تابع الأحداث التي نفذتها داخل هذه النسخة.')+
+  return hero('لوحة الإدارة','سجل النشاط','راجع عمليات الدخول وتغييرات الحسابات والامتحانات.')+
     `<section class="card">${db.log.length?table(['الحدث','الوقت'],db.log.map(item=>[esc(item.label),fmt(item.at)])):'<p>لا توجد أحداث بعد.</p>'}</section>`;
 }
 function download() {
@@ -235,118 +219,117 @@ function download() {
     const str = String(value);
     return '"'+(/^[=+\-@\t\r\n]/.test(str.trimStart())?"'":"")+str.replaceAll('"','""')+'"';
   };
-  const rows = [['الطالب','الامتحان','النسبة','النتيجة','وقت التسليم'],...db.results.map(r=>[studentName(r.student),r.title,r.percent,r.passed?'ناجح':'لم ينجح',new Date(r.at).toISOString()])];
+  const rows = [['الطالب','الامتحان','النسبة','النتيجة','وقت التسليم'],...db.results.map(r=>[studentName(r),r.title,r.percent,r.passed?'ناجح':'لم ينجح',new Date(r.at).toISOString()])];
   const url = URL.createObjectURL(new Blob(['\ufeff',rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
   const link = Object.assign(document.createElement('a'),{href:url,download:'exam-results.csv'});
   link.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-document.querySelector('#logout').addEventListener('click',()=>{
-  record('سجّل خروج '+account.name);
-  sessionStorage.removeItem('miqyas-account');
-  account = undefined;
-  role = undefined;
-  active = '';
-  page = 'exams';
+document.querySelector('#logout').addEventListener('click',()=>perform(async()=>{
+  await api('logout',{});
+  account=undefined;
+  role=undefined;
+  active='';
+  previousPages.length=0;
+  toast('');
+  render();
+}));
+document.querySelector('#back').addEventListener('click',()=>{
+  if (busy) return;
+  if (!previousPages.length) {location.assign('index.html');return;}
+  page=previousPages.pop();
+  if (page==='attempt' && !db.attempts[active]) page='exams';
   toast('');
   render();
 });
 document.addEventListener('click',event=>{
-  const target = event.target.closest('button[data-action]');
-  if (!target) return;
-  const {action,id} = target.dataset;
+  const target=event.target.closest('button[data-action]');
+  if (!target || !account || busy) return;
+  const {action,id}=target.dataset;
   toast('');
-  if (!account) {
-    if (action==='fill-login') {
-      const form = document.querySelector('#login-form');
-      form.elements.username.value = id;
-      form.elements.password.value = 'Demo1234';
-      form.querySelector('button').focus();
-    }
-    return;
-  }
-  if (action==='page') { page=id; render(); }
-  if (action==='start') start(id);
-  if (action==='jump') { position=Number(id); render(); }
-  if (action==='review') {
-    const current = db.attempts[active];
-    const id = current.order[position];
-    current.review[id] = !current.review[id];
-    save();
+  if (action==='page') navigate(id);
+  if (action==='start') perform(()=>start(id));
+  if (action==='jump') {position=Number(id);render();}
+  if (action==='review') perform(async()=>{
+    const current=db.attempts[active];
+    const question=current.order[position];
+    update(await api('attempt/review',{id:active,question,review:!current.review[question]}));
+    if (!db.attempts[active]) page='results';
     render();
-  }
-  if (action==='finish' && confirm('تأكيد تسليم الامتحان وعرض النتيجة؟')) {
-    submit(active,Date.now()>=db.attempts[active].deadline);
-    page='results';
-    render();
-    toast('تم تسليم الامتحان.');
-  }
+  });
+  if (action==='finish' && confirm('تأكيد تسليم الامتحان وعرض النتيجة؟')) perform(finishAttempt);
   if (action==='export') download();
-  if (action==='toggle') {
-    const person = db.people[Number(id)];
-    if (person.id===account.id) return toast('حساب المدير الحالي لازم يظل مفعّلاً.');
-    person.enabled = !person.enabled;
-    record((person.enabled?'تم تفعيل حساب ':'تم إيقاف حساب ')+person.name);
-    render();
-  }
+  if (action==='toggle') perform(async()=>{update(await api('accounts/toggle',{id}));render();});
 });
 document.addEventListener('change',event=>{
-  const field = event.target;
+  const field=event.target;
   if (field.id==='question-type') {
-    const label = document.querySelector('#options-label');
-    label.hidden = field.value==='boolean';
-    label.querySelector('textarea').required = !label.hidden;
+    const label=document.querySelector('#options-label');
+    label.hidden=field.value==='boolean';
+    label.querySelector('textarea').required=!label.hidden;
   }
   if (field.name==='answer' && page==='attempt') {
-    const current = db.attempts[active];
-    if (current.deadline<=Date.now()) { tick(); return; }
-    current.answers[current.order[position]] = Number(field.value);
-    save();
-    render();
-    if (page === 'attempt') {
+    if (busy) {render();return;}
+    perform(async()=>{
+      const current=db.attempts[active];
+      try {
+        update(await api('attempt/answer',{id:active,question:current.order[position],answer:Number(field.value)}));
+        if (!db.attempts[active]) page='results';
+      } finally {render();}
       view.querySelector('input[name="answer"]:checked')?.focus();
-      toast('تم حفظ الإجابة.');
-    }
+      toast(page==='attempt'?'تم حفظ الإجابة.':'تم تسليم الامتحان.');
+    });
   }
 });
 document.addEventListener('submit',event=>{
   event.preventDefault();
-  const form = new FormData(event.target);
-  if (event.target.id==='login-form') {
-    const person = db.people.find(p=>p.id===form.get('username').trim().toLowerCase());
-    if (!person || person.role!==portal || form.get('password')!=='Demo1234') return toast('تحقّق من بيانات الدخول واختر البوابة المخصصة لحسابك.');
-    if (!person.enabled) return toast('هذا الحساب موقوف. تواصل مع مدير النظام.');
-    account = person;
-    role = person.role;
-    page = Object.keys(menus[role])[0];
-    sessionStorage.setItem('miqyas-account',person.id);
-    record('سجّل دخول '+person.name);
-    toast('');
-    render();
-    return;
-  }
-  const id = globalThis.crypto?.randomUUID?.() ?? String(Date.now());
-  if (event.target.id==='question-form') {
-    const options = form.get('type')==='boolean'?['صح','خطأ']:String(form.get('options')).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-    const correct = Number(form.get('correct'))-1;
-    const prompt = form.get('prompt').trim();
-    if (!prompt || options.length<2 || !options[correct]) return toast('أدخل نص السؤال وخيارين على الأقل ورقم إجابة موجود.');
-    db.questions.push({id,prompt,options,correct,points:Number(form.get('points'))});
-    record('أضاف المدرّس سؤالاً إلى البنك');
-    render();
-    toast('تم حفظ السؤال.');
-  }
-  if (event.target.id==='exam-form') {
-    const ids = form.getAll('questions');
-    const title = form.get('title').trim();
-    if (!title || !ids.length) return toast('أدخل اسم الامتحان واختر سؤالاً واحداً على الأقل.');
-    const start = form.get('start');
-    db.exams.push({id,title,ids,start:start?new Date(start).toISOString():'',duration:Number(form.get('duration')),pass:Number(form.get('pass')),shuffle:form.has('shuffle')});
-    record('أنشأ المدرّس امتحان '+title);
-    page='exams';
-    render();
-    toast('تم حفظ الامتحان. يمكنك تجربته بدور الطالب.');
-  }
+  if (busy || staticPreview) return;
+  const form=new FormData(event.target);
+  const submitButton=event.target.querySelector('button');
+  submitButton.disabled=true;
+  toast('');
+  perform(async()=>{
+    try {
+      const values=Object.fromEntries(form);
+      switch (event.target.id) {
+        case 'register-form':
+          await api('register',values);
+          location.assign('?portal=student&created=1');
+          break;
+        case 'login-form':
+          update(await api('login',{...values,portal}));
+          page=Object.keys(menus[role])[0];
+          previousPages.length=0;
+          render();
+          break;
+        case 'teacher-form':
+          update(await api('teachers',values));
+          render();
+          toast('تم إنشاء حساب المدرّس.');
+          break;
+        case 'question-form': {
+          const options=values.type==='boolean'?['صح','خطأ']:String(values.options).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+          update(await api('questions',{prompt:values.prompt,options,correct:Number(values.correct)-1,points:Number(values.points)}));
+          render();
+          toast('تم حفظ السؤال.');
+          break;
+        }
+        case 'exam-form':
+          update(await api('exams',{title:values.title,ids:form.getAll('questions'),start:values.start?new Date(values.start).toISOString():'',duration:Number(values.duration),pass:Number(values.pass),shuffle:form.has('shuffle')}));
+          page='exams';
+          render();
+          toast('تم نشر الامتحان.');
+          break;
+      }
+    } finally {submitButton.disabled=false;}
+  });
 });
 render();
-setInterval(tick, 250);
+perform(async()=>{
+  if (staticPreview || !Object.hasOwn(portals,portal)) return;
+  update(await api('state'));
+  if (account) page=Object.keys(menus[role])[0];
+  render();
+  if (!account && params.has('created')) toast('تم إنشاء الحساب. سجّل دخولك بالبريد وكلمة المرور.');
+});
+setInterval(tick,250);

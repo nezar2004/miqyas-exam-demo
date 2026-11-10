@@ -138,6 +138,7 @@ th{background:#f1f6f2}
 .back-link{width:fit-content;margin-bottom:22px}
 .login-panel form{margin:22px 0 14px}
 .login-panel form button{margin-top:4px}
+.login-panel form fieldset{display:grid;gap:12px;border:0;padding:0;margin:0}
 .login-story{display:flex;flex-direction:column;justify-content:center;padding:35px}
 .login-story h2{font-size:clamp(24px,4vw,43px);margin:12px 0 6px}
 .story-foot{font-size:13px;color:#d5e6dc;margin-top:15px}

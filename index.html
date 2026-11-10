@@ -4,18 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>مقياس | منصة الامتحانات</title>
-<link rel="stylesheet" href="style.css?v=3">
-<script src="app.js?v=3" defer></script>
+<link rel="stylesheet" href="style.css?v=6">
+<script src="app.js?v=6" defer></script>
 </head>
-<body>
+<body class="signed-out">
 <aside class="sidebar">
-  <a class="brand" href="./"><span class="logo" aria-hidden="true">▤</span><div>مقياس<small>منصة التقييم الرقمي</small></div></a>
+  <a class="brand" href="index.html"><span class="logo" aria-hidden="true">▤</span><div>مقياس<small>منصة التقييم الرقمي</small></div></a>
   <div class="identity"><strong id="account-name"></strong><small id="account-role"></small></div>
   <nav id="nav" aria-label="القائمة الرئيسية"></nav>
   <button id="logout" type="button">تسجيل الخروج</button>
-  <div class="side-note"><span class="dot"></span> بيئة تجريبية<small>البيانات تُحفظ في متصفحك</small></div>
+  <div class="side-note"><span class="dot"></span> منصة التقييم الرقمي</div>
 </aside>
-<main><header class="top"><span>مساحة العمل / <strong id="section"></strong></span><span class="badge">نسخة تجريبية</span></header>
+<main><header class="top"><span>مساحة العمل / <strong id="section"></strong></span><button type="button" id="back">رجوع</button></header>
 <div id="view"></div>
 <p id="notice" role="status" aria-live="polite"></p>
 </main>
