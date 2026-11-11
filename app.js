@@ -5,6 +5,7 @@ const firebasePortal = pagesHost && ['student','teacher','admin'].includes(porta
 const staticPreview = pagesHost && !firebasePortal;
 let firebase;
 let registration = portal==='student' && params.has('register');
+const passwordReset = firebasePortal && params.has('reset') && !registration;
 let account, role, db;
 let busy=false;
 const previousPages=[];
@@ -94,7 +95,7 @@ function render() {
   if (!account) {
     const entry = Object.hasOwn(portals,portal) ? portals[portal] : null;
     document.title = entry ? entry.title+' | مقياس' : 'مقياس | منصة التقييم الرقمي';
-    view.innerHTML = entry ? login(entry) : gateway();
+    view.innerHTML = passwordReset ? resetPassword() : entry ? login(entry) : gateway();
     return;
   }
   document.title = portals[role].title+' | مقياس';
@@ -132,8 +133,20 @@ function login(entry) {
       ${staticPreview?'<p class="badge warn" role="status">إنشاء الحساب وتسجيل الدخول رح يتفعّلوا بعد نشر خادم مقياس.</p>':''}
       <fieldset ${staticPreview?'disabled':''}>${fields(registration)}</fieldset>
       <button class="primary" ${staticPreview?'disabled':''}>${registration?'إنشاء الحساب':'تسجيل الدخول'}</button>
-    </form>${links}</section>
+    </form>${firebasePortal && !registration?`<a class="back-link" href="?portal=${portal}&amp;reset=1">نسيت كلمة المرور؟</a>`:''}${links}</section>
     <aside class="login-story"><span class="kicker">MIQYAS / ${entry.code}</span><h2>${entry.title}</h2><p>${entry.detail}</p>${illustration()}<span class="story-foot">مساحة العمل المخصصة · مقياس</span></aside></div>`;
+}
+function resetPassword() {
+  return publicHeader()+`<div class="login-layout"><section class="login-panel">
+    <a class="back-link" href="?portal=${portal}">الرجوع لتسجيل الدخول</a>
+    <h1>إعادة تعيين كلمة المرور</h1>
+    <p class="muted">أدخل البريد الإلكتروني المسجّل في مقياس.</p>
+    <form id="reset-password-form">
+      <label>البريد الإلكتروني<input name="email" type="email" maxlength="254" required autocomplete="email" dir="ltr"></label>
+      <button class="primary">إرسال رابط إعادة التعيين</button>
+      <p role="status" id="reset-status" hidden></p>
+    </form>
+  </section></div>`;
 }
 function exams() {
   const student = role === 'student';
@@ -392,7 +405,21 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=5');
+        firebase ??= await import('./firebase-student.js?v=6');
+        if (event.target.id==='reset-password-form') {
+          const status=event.target.querySelector('#reset-status');
+          status.hidden=true;
+          try {
+            await firebase.requestPasswordReset(values.email);
+            status.textContent='إذا كان البريد مسجّلًا، رح يوصلك رابط إعادة التعيين. افحص البريد الوارد والرسائل غير المرغوب فيها.';
+          } catch (error) {
+            status.textContent=error.code==='auth/too-many-requests'
+              ? 'حاول مرة ثانية بعد فترة.'
+              : 'تعذّر طلب الرابط. تأكّد من البريد واتصالك بالإنترنت وحاول مرة ثانية.';
+          }
+          status.hidden=false;
+          return;
+        }
         if (event.target.id==='create-teacher-form' && role==='admin') {
           try {await firebase.createTeacher(values);}
           catch (error) {
@@ -482,7 +509,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=5');
+    firebase=await import('./firebase-student.js?v=6');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

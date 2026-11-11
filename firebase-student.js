@@ -1,7 +1,7 @@
 import {deleteApp, initializeApp} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js';
 import {
   browserSessionPersistence, createUserWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence, setPersistence,
-  signInWithEmailAndPassword, signOut
+  sendPasswordResetEmail, signInWithEmailAndPassword, signOut
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
 import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, query, runTransaction, serverTimestamp, setDoc, Timestamp, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
 
@@ -68,6 +68,14 @@ export async function login({email,password},portal) {
 }
 
 export function logout() { return signOut(auth); }
+
+export async function requestPasswordReset(email) {
+  try {
+    await sendPasswordResetEmail(auth,email.trim());
+  } catch (error) {
+    if (error.code!=='auth/user-not-found') throw error;
+  }
+}
 
 export async function loadPeople() {
   const [profiles,teachers,admins]=await Promise.all([
