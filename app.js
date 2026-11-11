@@ -13,6 +13,8 @@ let page = role==='admin'?'people':'exams';
 let active = '';
 let position = 0;
 let selectedRoster;
+let editingQuestionId;
+let reschedulingExamId;
 const grades=new Map();
 const roleNames = {student:'طالب', teacher:'مدرّس', admin:'مدير النظام'};
 const portals = {
@@ -71,6 +73,8 @@ async function perform(work) {
   finally {busy=false; view.removeAttribute('aria-busy');}
 }
 function navigate(next) {
+  if (next!=='bank') editingQuestionId=undefined;
+  if (next!=='exams') reschedulingExamId=undefined;
   if (next!==page) previousPages.push(page);
   page=next;
   render();
@@ -78,6 +82,9 @@ function navigate(next) {
 function toast(message) { notice.textContent = message; }
 async function loadFirebaseAccount(next) {
   const data=next?.name ? await (portal==='admin'?firebase.loadPeople():firebase.loadExams(portal)) : null;
+  if (next?.role==='student' && data) {
+    await Promise.allSettled(Object.keys(data.submissions).map(id=>firebase.syncParticipant(id,next.name)));
+  }
   account=next;
   role=next?.role;
   db=data;
@@ -164,7 +171,7 @@ function exams() {
       `<div class="grid">${metric('الامتحانات المنشورة',db.exams.length)}${metric('المواعيد القادمة',upcoming)}${student?'':metric('أسئلة في البنك',db.questions.length)}</div>
       <div class="row"><h2>${student?'جدول الامتحانات':'الامتحانات المنشورة'}</h2><div class="actions">${button('تحديث القائمة','refresh-exams')}${student?'':button('إنشاء امتحان','page','create',true)}</div></div>
       ${db.exams.length?db.exams.map(exam=>`<section class="card"><span class="badge">${esc(exam.section)}</span><h3>${esc(exam.title)}</h3><p>البداية ${fmt(exam.start)}${exam.ready?' · النهاية '+fmt(Date.parse(exam.start)+exam.duration*60000):''}</p><p class="muted">${exam.questionCount} أسئلة · ${exam.duration} دقيقة · النجاح ${exam.pass}%</p>
-        ${student?studentExamAction(exam):exam.ready?button('كشف الأسماء','roster',exam.id):`<form class="enable-exam-form" data-id="${esc(exam.id)}"><label>وقت البداية الجديد<input type="datetime-local" name="start" required></label><div><button class="primary">تفعيل تقديم الامتحان</button></div></form>`}</section>`).join(''):'<p class="card">ما في امتحانات منشورة حاليًا.</p>'}`;
+        ${student?studentExamAction(exam):teacherExamActions(exam)}</section>`).join(''):'<p class="card">ما في امتحانات منشورة حاليًا.</p>'}`;
   }
   const resultCount = student ? db.results.filter(r=>r.student===account.id).length : db.results.length;
   return hero('لوحة '+roleNames[role], student?'أهلاً، '+esc(account.name):'إدارة الامتحانات',
@@ -178,6 +185,17 @@ function exams() {
       ${student ? done ? button('عرض النتيجة','page','results') : scheduled ? '' : button(db.attempts[attemptKey(exam.id)]?'متابعة الامتحان':'ابدأ الامتحان','start',exam.id,true) : ''}</div></section>`;
     }).join('');
 }
+function teacherExamActions(exam) {
+  const start=Date.parse(exam.start);
+  const isRunning=Date.now()>=start && Date.now()<start+exam.duration*60000;
+  const actions=exam.ready?`<div class="actions">${button('كشف الأسماء','roster',exam.id)}
+    ${isRunning?'':button('تغيير الموعد','reschedule-exam',exam.id)}</div>`:'';
+  if (exam.ready && reschedulingExamId!==exam.id) return actions;
+  return actions+`<form class="${exam.ready?'reschedule-exam-form':'enable-exam-form'}" data-id="${esc(exam.id)}">
+    <label>وقت البداية الجديد<input type="datetime-local" name="start" required></label>
+    <div class="actions"><button class="primary">${exam.ready?'حفظ الموعد':'تفعيل تقديم الامتحان'}</button>
+    ${exam.ready?button('إلغاء','cancel-reschedule'):''}</div></form>`;
+}
 function studentExamAction(exam) {
   const start=Date.parse(exam.start);
   const saved=db.submissions[exam.id];
@@ -187,6 +205,7 @@ function studentExamAction(exam) {
     return grade?`<span class="badge ${grade.passed?'ok':'warn'}">${grade.earned} / ${grade.total} · ${grade.percent}% · ${grade.passed?'ناجح':'دون علامة النجاح'}</span>`
       :`<div class="actions"><span class="badge ok">تم التسليم</span>${button('عرض العلامة','grade',exam.id)}</div>`;
   }
+  if (saved?.startedAt?.toMillis()<start) return button('عرض علامة المحاولة السابقة','grade',exam.id);
   if (Date.now()<start) return '<span class="badge">لم يبدأ بعد</span>';
   if (Date.now()>=start+exam.duration*60000) {
     return saved?button('عرض علامة الإجابات المحفوظة','grade',exam.id):'<span class="badge warn">انتهى وقت التقديم</span>';
@@ -217,39 +236,47 @@ function roster() {
       entry.grade?`${entry.grade.earned} / ${entry.grade.total} · ${entry.grade.percent}%`:'—'
     ])):'<p>لسه ما في محاولات مسجّلة بكشف هالامتحان.</p>'}</section>`;
 }
-function answerOption(index, fixedAnswer) {
+function answerOption(index, fixedAnswer, count, existing) {
   const number=index+1;
   const label=fixedAnswer || 'الخيار '+number;
-  return `<div class="answer-option" ${!fixedAnswer && index>=4?'hidden':''}>
-    ${fixedAnswer?`<span>${label}</span>`:`<label>${label}<input name="option" maxlength="200" required ${index>=4?'disabled':''}></label>`}
-    <label class="correct-option"><input type="radio" name="${fixedAnswer?'correctBoolean':'correct'}" value="${index}" aria-label="تحديد ${label} كإجابة صحيحة" required ${!fixedAnswer && index>=4?'disabled':''}><span>صحيحة</span></label>
+  const hidden=!fixedAnswer && index>=count;
+  return `<div class="answer-option" ${hidden?'hidden':''}>
+    ${fixedAnswer?`<span>${label}</span>`:`<label>${label}<input name="option" maxlength="200" value="${esc(existing?.options[index] ?? '')}" required ${hidden?'disabled':''}></label>`}
+    <label class="correct-option"><input type="radio" name="${fixedAnswer?'correctBoolean':'correct'}" value="${index}" aria-label="تحديد ${label} كإجابة صحيحة" required ${hidden?'disabled':''} ${existing?.correct===index?'checked':''}><span>صحيحة</span></label>
   </div>`;
 }
-function questionFromForm(form) {
+function questionFromForm(form, existing) {
   const boolean=form.get('type')==='boolean';
   const options=boolean?['صح','خطأ']:form.getAll('option').map(value=>value.trim());
   const selection=form.get(boolean?'correctBoolean':'correct');
   const correct=selection===null?-1:Number(selection);
   const prompt=form.get('prompt').trim();
-  if (!prompt || ![2,4,6].includes(options.length) || options.some(value=>!value) || !options[correct]) {
+  if (!prompt || ![2,4,6,existing?.options.length].includes(options.length) || options.some(value=>!value) || !options[correct]) {
     throw new Error('اكتب السؤال وكل الخيارات، وحدّد إجابة صحيحة واحدة.');
   }
   return {prompt,options,correct,points:Number(form.get('points'))};
 }
 function bank() {
+  const existing=db.questions.find(item=>item.id===editingQuestionId);
+  const count=existing?.options.length ?? 4;
+  const boolean=existing?.options.length===2 && existing.options[0]==='صح' && existing.options[1]==='خطأ';
+  const counts=[...new Set([2,4,6,count])].sort((a,b)=>a-b);
   return hero('أدوات المدرّس','بنك الأسئلة','أضف أسئلة اختيار من متعدد أو صح وخطأ لاستخدامها في امتحاناتك.') +
-    `<section class="card"><h2>إضافة سؤال</h2><form id="question-form">
-    <label>نوع السؤال<select id="question-type" name="type"><option value="multiple">اختيار من متعدد</option><option value="boolean">صح أو خطأ</option></select></label>
-    <label>نص السؤال<textarea name="prompt" required maxlength="400"></textarea></label>
-    <fieldset id="multiple-options" class="answer-options"><legend>خيارات الإجابة</legend>
-    <label>عدد الخيارات<select id="option-count"><option value="2">٢</option><option value="4" selected>٤</option><option value="6">٦</option></select></label>
+    `<section class="card"><h2>${existing?'تعديل سؤال':'إضافة سؤال'}</h2><form id="question-form" data-id="${esc(existing?.id ?? '')}">
+    <label>نوع السؤال<select id="question-type" name="type"><option value="multiple">اختيار من متعدد</option><option value="boolean" ${boolean?'selected':''}>صح أو خطأ</option></select></label>
+    <label>نص السؤال<textarea name="prompt" required maxlength="400">${esc(existing?.prompt ?? '')}</textarea></label>
+    <fieldset id="multiple-options" class="answer-options" ${boolean?'hidden disabled':''}><legend>خيارات الإجابة</legend>
+    <label>عدد الخيارات<select id="option-count">${counts.map(n=>`<option value="${n}" ${n===count?'selected':''}>${n.toLocaleString('ar-JO')}</option>`).join('')}</select></label>
     <p class="muted">حدّد مربع الإجابة الصحيحة.</p>
-    ${Array.from({length:6},(_,index)=>answerOption(index)).join('')}</fieldset>
-    <fieldset id="boolean-options" class="answer-options" hidden disabled><legend>الإجابة الصحيحة</legend>
-    ${['صح','خطأ'].map((answer,index)=>answerOption(index,answer)).join('')}</fieldset>
-    <label>العلامة<input name="points" type="number" min="1" max="100" value="1" required></label>
-    <div><button class="primary">حفظ السؤال</button></div></form></section>
-    <section class="card"><h2>الأسئلة المحفوظة</h2>${table(['السؤال','الإجابة الصحيحة','العلامة'], db.questions.map(q=>[esc(q.prompt),esc(q.options[q.correct]),q.points]))}</section>`;
+    ${Array.from({length:Math.max(6,count)},(_,index)=>answerOption(index,null,count,existing)).join('')}</fieldset>
+    <fieldset id="boolean-options" class="answer-options" ${boolean?'':'hidden disabled'}><legend>الإجابة الصحيحة</legend>
+    ${['صح','خطأ'].map((answer,index)=>answerOption(index,answer,2,boolean?existing:null)).join('')}</fieldset>
+    <label>العلامة<input name="points" type="number" min="1" max="100" value="${existing?.points ?? 1}" required></label>
+    <div class="actions"><button class="primary">${existing?'حفظ التعديل':'حفظ السؤال'}</button>${existing?button('إلغاء التعديل','cancel-question-edit'):''}</div></form></section>
+    <section class="card"><h2>الأسئلة المحفوظة</h2>${table(
+      ['السؤال','الإجابة الصحيحة','العلامة',...(firebasePortal?['الإجراء']:[])],
+      db.questions.map(q=>[esc(q.prompt),esc(q.options[q.correct]),q.points,...(firebasePortal?[button('تعديل','edit-question',q.id)]:[])])
+    )}</section>`;
 }
 function create() {
   if (firebasePortal && !db.questions.length) return hero('أدوات المدرّس','إنشاء امتحان','أضف سؤالًا واحدًا على الأقل لبنك الأسئلة حتى تقدر تنشر امتحان.')+`<div class="card">${button('الانتقال إلى بنك الأسئلة','page','bank',true)}</div>`;
@@ -385,6 +412,8 @@ document.querySelector('#logout').addEventListener('click',()=>perform(async()=>
   else await api('logout',{});
   grades.clear();
   selectedRoster=undefined;
+  editingQuestionId=undefined;
+  reschedulingExamId=undefined;
   account=undefined;
   role=undefined;
   active='';
@@ -422,6 +451,24 @@ document.addEventListener('click',event=>{
     }
   }
   if (action==='page') navigate(id);
+  if (action==='edit-question' && role==='teacher') {
+    editingQuestionId=id;
+    render();
+    view.querySelector('#question-form textarea').focus();
+  }
+  if (action==='cancel-question-edit') {
+    editingQuestionId=undefined;
+    render();
+  }
+  if (action==='reschedule-exam' && role==='teacher') {
+    reschedulingExamId=id;
+    render();
+    view.querySelector('.reschedule-exam-form input').focus();
+  }
+  if (action==='cancel-reschedule') {
+    reschedulingExamId=undefined;
+    render();
+  }
   if (action==='grade' && role==='student') perform(()=>showGrade(id));
   if (action==='roster' && role==='teacher') perform(async()=>{
     const exam=db.exams.find(item=>item.id===id);
@@ -493,7 +540,17 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=8');
+        firebase ??= await import('./firebase-student.js?v=9');
+        if (event.target.classList.contains('reschedule-exam-form') && role==='teacher') {
+          const start=new Date(values.start);
+          if (!Number.isFinite(+start) || +start<=Date.now()) throw new Error('اختَر موعد بداية بالمستقبل.');
+          await firebase.rescheduleExam(event.target.dataset.id,start);
+          reschedulingExamId=undefined;
+          await loadFirebaseAccount(account);
+          render();
+          toast('تم تغيير موعد الامتحان.');
+          return;
+        }
         if (event.target.classList.contains('enable-exam-form') && role==='teacher') {
           await firebase.enableExam(event.target.dataset.id,new Date(values.start).toISOString(),db.questions);
           await loadFirebaseAccount(account);
@@ -528,10 +585,15 @@ document.addEventListener('submit',event=>{
           return;
         }
         if (event.target.id==='question-form') {
-          await firebase.addQuestion(questionFromForm(form));
+          const id=event.target.dataset.id;
+          const existing=db.questions.find(item=>item.id===id);
+          const values=questionFromForm(form,existing);
+          if (id) await firebase.editQuestion(id,values);
+          else await firebase.addQuestion(values);
+          editingQuestionId=undefined;
           await loadFirebaseAccount(account);
           render();
-          toast('تم حفظ السؤال.');
+          toast(id?'تم حفظ تعديل السؤال.':'تم حفظ السؤال.');
           return;
         }
         if (event.target.id==='exam-form') {
@@ -604,7 +666,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=8');
+    firebase=await import('./firebase-student.js?v=9');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

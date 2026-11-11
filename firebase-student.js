@@ -143,6 +143,19 @@ export async function loadExams(portal) {
 export async function addQuestion(question) {
   await addDoc(bank(),question);
 }
+export async function editQuestion(id, question) {
+  const ref=doc(bank(),id);
+  await runTransaction(db,async tx=>{
+    const snapshot=await tx.get(ref);
+    if (!snapshot.exists()) throw new Error('السؤال غير موجود في بنك الأسئلة.');
+    const saved=snapshot.data();
+    tx.update(ref,{
+      ...question,
+      originalCorrect:saved.originalCorrect ?? saved.correct,
+      originalPoints:saved.originalPoints ?? saved.points
+    });
+  });
+}
 function examQuestions(ids,bankQuestions) {
   return ids.map(id=>{
     const item=bankQuestions.find(question=>question.id===id);
@@ -150,11 +163,13 @@ function examQuestions(ids,bankQuestions) {
     return {id,prompt:item.prompt,options:item.options,points:item.points};
   });
 }
-function answerKey(ids,bankQuestions) {
+function answerKey(ids,bankQuestions,original=false) {
   return Object.fromEntries(ids.map(id=>{
     const question=bankQuestions.find(item=>item.id===id);
     if (!question) throw new Error('بعض أسئلة الامتحان غير موجودة في البنك.');
-    return [id,{correct:question.correct,points:question.points}];
+    const correct=original?(question.originalCorrect ?? question.correct):question.correct;
+    const points=original?(question.originalPoints ?? question.points):question.points;
+    return [id,{correct,points}];
   }));
 }
 export async function publishExam({ids,shuffle,start,...metadata},bankQuestions) {
@@ -178,6 +193,9 @@ export async function enableExam(id,start,bankQuestions) {
   batch.set(doc(db,'examContent',id),{questions:examQuestions(ids,bankQuestions),shuffle});
   batch.set(doc(db,'examKeys',id),{answers:answerKey(ids,bankQuestions)});
   await batch.commit();
+}
+export function rescheduleExam(id,start) {
+  return updateDoc(doc(db,'publishedExams',id),{start:Timestamp.fromDate(start)});
 }
 
 function submissionRef(id) {
@@ -206,6 +224,9 @@ export async function beginAttempt(exam,name) {
     transaction.set(ref,initial);
     return initial;
   });
+  if (attempt.startedAt?.toMillis?.()<Date.parse(exam.start)) {
+    throw new Error('إجابات محاولتك السابقة محفوظة. ارجع للجدول لعرض العلامة.');
+  }
   const order=questions.map(q=>q.id);
   if (shuffle) {
     // Keep the order stable if the student refreshes or resumes.
@@ -250,7 +271,7 @@ export async function examRoster(exam,bankQuestions) {
   if (!answers) {
     const paper=await getDoc(doc(db,'teacherBanks',auth.currentUser.uid,'papers',exam.id));
     if (!paper.exists()) throw new Error('تعذّر العثور على مفتاح الامتحان.');
-    answers=answerKey(paper.data().ids,bankQuestions);
+    answers=answerKey(paper.data().ids,bankQuestions,true);
     await runTransaction(db,async tx=>{
       const existing=await tx.get(keyRef);
       if (!existing.exists()) tx.set(keyRef,{answers});
@@ -262,7 +283,7 @@ export async function examRoster(exam,bankQuestions) {
   return Promise.all(entries.docs.map(async entry=>{
     const snapshot=await getDoc(doc(db,'studentProfiles',entry.id,'attempts',exam.id));
     const attempt=snapshot.data();
-    const submitted=Boolean(attempt?.submittedAt || (attempt && closed));
+    const submitted=Boolean(attempt?.submittedAt || (attempt && (closed || attempt.startedAt.toMillis()<Date.parse(exam.start))));
     return {name:entry.data().name,submitted,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null};
   }));
 }

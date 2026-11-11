@@ -31,14 +31,18 @@ service cloud.firestore {
     match /teacherBanks/{uid}/questions/{id} {
       function validQuestion() {
         let q = request.resource.data;
-        return q.keys().hasOnly(['prompt', 'options', 'correct', 'points'])
-          && q.prompt is string && q.prompt.size() > 0 && q.prompt.size() <= 400
+        return q.prompt is string && q.prompt.size() > 0 && q.prompt.size() <= 400
           && q.options is list && q.options.size() >= 2 && q.options.size() <= 10
           && q.correct is int && q.correct >= 0 && q.correct < q.options.size()
           && q.points is int && q.points >= 1 && q.points <= 100;
       }
       allow read: if teacher() && request.auth.uid == uid;
-      allow create: if teacher() && request.auth.uid == uid && validQuestion();
+      allow create: if teacher() && request.auth.uid == uid && validQuestion()
+        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points']);
+      allow update: if teacher() && request.auth.uid == uid && validQuestion()
+        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points', 'originalCorrect', 'originalPoints'])
+        && request.resource.data.originalCorrect == resource.data.get('originalCorrect', resource.data.correct)
+        && request.resource.data.originalPoints == resource.data.get('originalPoints', resource.data.points);
     }
     match /teacherBanks/{uid}/papers/{id} {
       allow get: if teacher() && request.auth.uid == uid;
@@ -70,10 +74,16 @@ service cloud.firestore {
         && request.resource.data.ready == true
         && existsAfter(/databases/$(database)/documents/examContent/$(id));
       allow update: if teacher() && resource.data.owner == request.auth.uid
-        && resource.data.get('ready', false) == false
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready', 'start'])
-        && request.resource.data.ready == true && request.resource.data.start is timestamp
-        && existsAfter(/databases/$(database)/documents/examContent/$(id));
+        && request.resource.data.start is timestamp
+        && (
+          (resource.data.get('ready', false) == false
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready', 'start'])
+            && request.resource.data.ready == true
+            && existsAfter(/databases/$(database)/documents/examContent/$(id)))
+          || (resource.data.get('ready', false) == true && !duringExam(resource.data)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['start'])
+            && request.resource.data.start > request.time)
+        );
     }
     function duringExam(exam) {
       return exam.get('ready', false) == true && request.time >= exam.start
@@ -132,7 +142,7 @@ service cloud.firestore {
         && request.resource.data.answers == {} && request.resource.data.review == {}
         && request.resource.data.submittedAt == null;
       allow update: if student(uid) && resource.data.submittedAt == null && (
-        (duringExam(exam())
+        (duringExam(exam()) && resource.data.startedAt >= exam().start
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answers','review'])
           && request.resource.data.answers is map && request.resource.data.answers.size() <= exam().questionCount
           && request.resource.data.review is map && request.resource.data.review.size() <= exam().questionCount)
