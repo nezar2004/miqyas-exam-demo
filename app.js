@@ -597,7 +597,7 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=10');
+        firebase ??= await import('./firebase-student.js?v=11');
         if (event.target.classList.contains('reschedule-exam-form') && role==='teacher') {
           const start=new Date(values.start);
           if (!Number.isFinite(+start) || +start<=Date.now()) throw new Error('اختَر موعد بداية بالمستقبل.');
@@ -726,7 +726,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=10');
+    firebase=await import('./firebase-student.js?v=11');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

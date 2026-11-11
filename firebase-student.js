@@ -14,8 +14,8 @@ const app=initializeApp({
 const appCheckKey=document.querySelector('meta[name="firebase-app-check-site-key"]')?.content.trim();
 async function enableAppCheck(firebaseApp) {
   if (!appCheckKey) return;
-  const {initializeAppCheck,ReCaptchaV3Provider}=await import('https://www.gstatic.com/firebasejs/12.7.0/firebase-app-check.js');
-  initializeAppCheck(firebaseApp,{provider:new ReCaptchaV3Provider(appCheckKey),isTokenAutoRefreshEnabled:true});
+  const {initializeAppCheck,ReCaptchaEnterpriseProvider}=await import('https://www.gstatic.com/firebasejs/12.7.0/firebase-app-check.js');
+  initializeAppCheck(firebaseApp,{provider:new ReCaptchaEnterpriseProvider(appCheckKey),isTokenAutoRefreshEnabled:true});
 }
 await enableAppCheck(app);
 const auth=getAuth(app);
