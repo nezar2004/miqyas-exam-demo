@@ -12,6 +12,8 @@ const previousPages=[];
 let page = role==='admin'?'people':'exams';
 let active = '';
 let position = 0;
+let selectedRoster;
+const grades=new Map();
 const roleNames = {student:'طالب', teacher:'مدرّس', admin:'مدير النظام'};
 const portals = {
   student:{title:'بوابة الطالب', code:'01', icon:'cap', detail:'قدّم امتحاناتك وتابع نتائجك في مكان واحد.'},
@@ -104,7 +106,7 @@ function render() {
   const navIcons = {exams:'grid',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
   nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['results','analytics','log'].includes(id):id!=='addTeacher').map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#section').textContent = menus[role][page] || 'تقديم الامتحان';
-  const screens = {exams, results, bank, create, analytics, people, addTeacher, log, attempt};
+  const screens = {exams, results, bank, create, analytics, people, addTeacher, log, attempt, roster};
   view.innerHTML = screens[page]();
   tick();
 }
@@ -162,7 +164,7 @@ function exams() {
       `<div class="grid">${metric('الامتحانات المنشورة',db.exams.length)}${metric('المواعيد القادمة',upcoming)}${student?'':metric('أسئلة في البنك',db.questions.length)}</div>
       <div class="row"><h2>${student?'جدول الامتحانات':'الامتحانات المنشورة'}</h2><div class="actions">${button('تحديث القائمة','refresh-exams')}${student?'':button('إنشاء امتحان','page','create',true)}</div></div>
       ${db.exams.length?db.exams.map(exam=>`<section class="card"><span class="badge">${esc(exam.section)}</span><h3>${esc(exam.title)}</h3><p>البداية ${fmt(exam.start)}${exam.ready?' · النهاية '+fmt(Date.parse(exam.start)+exam.duration*60000):''}</p><p class="muted">${exam.questionCount} أسئلة · ${exam.duration} دقيقة · النجاح ${exam.pass}%</p>
-        ${student?studentExamAction(exam):exam.ready?'':`<form class="enable-exam-form" data-id="${esc(exam.id)}"><label>وقت البداية الجديد<input type="datetime-local" name="start" required></label><div><button class="primary">تفعيل تقديم الامتحان</button></div></form>`}</section>`).join(''):'<p class="card">ما في امتحانات منشورة حاليًا.</p>'}`;
+        ${student?studentExamAction(exam):exam.ready?button('كشف الأسماء','roster',exam.id):`<form class="enable-exam-form" data-id="${esc(exam.id)}"><label>وقت البداية الجديد<input type="datetime-local" name="start" required></label><div><button class="primary">تفعيل تقديم الامتحان</button></div></form>`}</section>`).join(''):'<p class="card">ما في امتحانات منشورة حاليًا.</p>'}`;
   }
   const resultCount = student ? db.results.filter(r=>r.student===account.id).length : db.results.length;
   return hero('لوحة '+roleNames[role], student?'أهلاً، '+esc(account.name):'إدارة الامتحانات',
@@ -180,12 +182,40 @@ function studentExamAction(exam) {
   const start=Date.parse(exam.start);
   const saved=db.submissions[exam.id];
   if (!exam.ready) return '<p class="muted">بانتظار تفعيل التقديم من المدرّس.</p>';
-  if (saved?.submittedAt) return '<span class="badge ok">تم التسليم</span>';
+  if (saved?.submittedAt) {
+    const grade=grades.get(exam.id);
+    return grade?`<span class="badge ${grade.passed?'ok':'warn'}">${grade.earned} / ${grade.total} · ${grade.percent}% · ${grade.passed?'ناجح':'دون علامة النجاح'}</span>`
+      :`<div class="actions"><span class="badge ok">تم التسليم</span>${button('عرض العلامة','grade',exam.id)}</div>`;
+  }
   if (Date.now()<start) return '<span class="badge">لم يبدأ بعد</span>';
   if (Date.now()>=start+exam.duration*60000) {
-    return `<span class="badge warn">${saved?'انتهى الوقت · الإجابات المحفوظة مغلقة':'انتهى وقت التقديم'}</span>`;
+    return saved?button('عرض علامة الإجابات المحفوظة','grade',exam.id):'<span class="badge warn">انتهى وقت التقديم</span>';
   }
   return button(saved?'متابعة الامتحان':'ابدأ الامتحان','start',exam.id,true);
+}
+async function showGrade(id) {
+  const exam=db.exams.find(item=>item.id===id);
+  const saved=db.submissions[id];
+  if (!saved.submittedAt) {
+    await firebase.submitAttempt(id);
+    saved.submittedAt=true;
+  }
+  await firebase.syncParticipant(id,account.name);
+  const grade=await firebase.studentGrade(exam);
+  if (grade) grades.set(id,grade);
+  render();
+  toast(grade?'':'العلامة بانتظار تجهيز مفتاح الامتحان. خلي المدرّس يفتح كشف الأسماء وبعدين جرّب مرة ثانية.');
+}
+function roster() {
+  const {exam,entries}=selectedRoster;
+  const graded=entries.filter(entry=>entry.grade);
+  return hero('لوحة المدرّس','كشف الأسماء',esc(exam.title))+
+    `<div class="grid">${metric('بدأوا الامتحان',entries.length)}${metric('المحاولات المصحّحة',graded.length)}</div>
+    <section class="card"><div class="row"><h2>الطلاب والعلامات</h2>${button('تحديث الكشف','roster',exam.id)}</div>
+    ${entries.length?table(['اسم الطالب','الحالة','العلامة'],entries.map(entry=>[
+      esc(entry.name),entry.submitted?'انتهت المحاولة':'بدأ الامتحان',
+      entry.grade?`${entry.grade.earned} / ${entry.grade.total} · ${entry.grade.percent}%`:'—'
+    ])):'<p>لسه ما في محاولات مسجّلة بكشف هالامتحان.</p>'}</section>`;
 }
 function answerOption(index, fixedAnswer) {
   const number=index+1;
@@ -236,7 +266,7 @@ function create() {
 async function start(id) {
   if (firebasePortal) {
     const exam=db.exams.find(item=>item.id===id);
-    const {questions,attempt}=await firebase.beginAttempt(exam);
+    const {questions,attempt}=await firebase.beginAttempt(exam,account.name);
     db.submissions[id]=attempt;
     if (attempt.submittedAt) {
       render();
@@ -272,6 +302,7 @@ async function finishAttempt() {
     page='exams';
     render();
     toast('تم تسليم الامتحان.');
+    await showGrade(active);
     return;
   }
   update(await api('attempt/finish',{id:active}));
@@ -352,6 +383,8 @@ function download() {
 document.querySelector('#logout').addEventListener('click',()=>perform(async()=>{
   if (firebasePortal) await firebase.logout();
   else await api('logout',{});
+  grades.clear();
+  selectedRoster=undefined;
   account=undefined;
   role=undefined;
   active='';
@@ -389,6 +422,12 @@ document.addEventListener('click',event=>{
     }
   }
   if (action==='page') navigate(id);
+  if (action==='grade' && role==='student') perform(()=>showGrade(id));
+  if (action==='roster' && role==='teacher') perform(async()=>{
+    const exam=db.exams.find(item=>item.id===id);
+    selectedRoster={exam,entries:await firebase.examRoster(exam,db.questions)};
+    navigate('roster');
+  });
   if (action==='start') perform(()=>start(id));
   if (action==='jump') {position=Number(id);render();}
   if (action==='review') perform(async()=>{
@@ -454,7 +493,7 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=7');
+        firebase ??= await import('./firebase-student.js?v=8');
         if (event.target.classList.contains('enable-exam-form') && role==='teacher') {
           await firebase.enableExam(event.target.dataset.id,new Date(values.start).toISOString(),db.questions);
           await loadFirebaseAccount(account);
@@ -565,7 +604,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=7');
+    firebase=await import('./firebase-student.js?v=8');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

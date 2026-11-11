@@ -150,6 +150,13 @@ function examQuestions(ids,bankQuestions) {
     return {id,prompt:item.prompt,options:item.options,points:item.points};
   });
 }
+function answerKey(ids,bankQuestions) {
+  return Object.fromEntries(ids.map(id=>{
+    const question=bankQuestions.find(item=>item.id===id);
+    if (!question) throw new Error('بعض أسئلة الامتحان غير موجودة في البنك.');
+    return [id,{correct:question.correct,points:question.points}];
+  }));
+}
 export async function publishExam({ids,shuffle,start,...metadata},bankQuestions) {
   const owner=auth.currentUser.uid;
   const exam=doc(collection(db,'publishedExams'));
@@ -157,6 +164,7 @@ export async function publishExam({ids,shuffle,start,...metadata},bankQuestions)
   batch.set(exam,{...metadata,owner,questionCount:ids.length,start:Timestamp.fromDate(new Date(start)),publishedAt:serverTimestamp(),ready:true});
   batch.set(doc(db,'teacherBanks',owner,'papers',exam.id),{ids,shuffle});
   batch.set(doc(db,'examContent',exam.id),{questions:examQuestions(ids,bankQuestions),shuffle});
+  batch.set(doc(db,'examKeys',exam.id),{answers:answerKey(ids,bankQuestions)});
   await batch.commit();
 }
 
@@ -168,19 +176,31 @@ export async function enableExam(id,start,bankQuestions) {
   const batch=writeBatch(db);
   batch.update(doc(db,'publishedExams',id),{ready:true,start:Timestamp.fromDate(new Date(start))});
   batch.set(doc(db,'examContent',id),{questions:examQuestions(ids,bankQuestions),shuffle});
+  batch.set(doc(db,'examKeys',id),{answers:answerKey(ids,bankQuestions)});
   await batch.commit();
 }
 
 function submissionRef(id) {
   return doc(db,'studentProfiles',auth.currentUser.uid,'attempts',id);
 }
-export async function beginAttempt(exam) {
+function participantRef(id) {
+  return doc(db,'publishedExams',id,'participants',auth.currentUser.uid);
+}
+export async function syncParticipant(id,name) {
+  const ref=participantRef(id);
+  await runTransaction(db,async tx=>{
+    if (!(await tx.get(ref)).exists()) tx.set(ref,{name});
+  });
+}
+export async function beginAttempt(exam,name) {
   const content=await getDoc(doc(db,'examContent',exam.id));
   if (!content.exists()) throw new Error('أسئلة الامتحان غير متاحة.');
   const {questions,shuffle}=content.data();
   const ref=submissionRef(exam.id);
+  const participant=participantRef(exam.id);
   const attempt=await runTransaction(db,async transaction=>{
-    const snapshot=await transaction.get(ref);
+    const [snapshot,entry]=await Promise.all([transaction.get(ref),transaction.get(participant)]);
+    if (!entry.exists()) transaction.set(participant,{name});
     if (snapshot.exists()) return snapshot.data();
     const initial={startedAt:serverTimestamp(),answers:{},review:{},submittedAt:null};
     transaction.set(ref,initial);
@@ -205,4 +225,44 @@ export function submitAttempt(id) {
     if (!saved.exists()) throw new Error('المحاولة غير موجودة.');
     if (!saved.data().submittedAt) transaction.update(ref,{submittedAt:serverTimestamp()});
   });
+}
+
+export function calculateGrade(key,answers,pass) {
+  let total=0;
+  let earned=0;
+  for (const [id,item] of Object.entries(key)) {
+    total+=item.points;
+    if (Object.hasOwn(answers,id) && answers[id]===item.correct) earned+=item.points;
+  }
+  const percent=total?Math.round(10000*earned/total)/100:0;
+  return {earned,total,percent,passed:total>0 && earned*100>=pass*total};
+}
+export async function studentGrade(exam) {
+  const [key,attempt]=await Promise.all([
+    getDoc(doc(db,'examKeys',exam.id)),getDoc(submissionRef(exam.id))
+  ]);
+  return key.exists()?calculateGrade(key.data().answers,attempt.data().answers,exam.pass):null;
+}
+export async function examRoster(exam,bankQuestions) {
+  const keyRef=doc(db,'examKeys',exam.id);
+  const key=await getDoc(keyRef);
+  let answers=key.data()?.answers;
+  if (!answers) {
+    const paper=await getDoc(doc(db,'teacherBanks',auth.currentUser.uid,'papers',exam.id));
+    if (!paper.exists()) throw new Error('تعذّر العثور على مفتاح الامتحان.');
+    answers=answerKey(paper.data().ids,bankQuestions);
+    await runTransaction(db,async tx=>{
+      const existing=await tx.get(keyRef);
+      if (!existing.exists()) tx.set(keyRef,{answers});
+      else answers=existing.data().answers;
+    });
+  }
+  const entries=await getDocs(collection(db,'publishedExams',exam.id,'participants'));
+  const closed=Date.now()>=Date.parse(exam.start)+exam.duration*60000;
+  return Promise.all(entries.docs.map(async entry=>{
+    const snapshot=await getDoc(doc(db,'studentProfiles',entry.id,'attempts',exam.id));
+    const attempt=snapshot.data();
+    const submitted=Boolean(attempt?.submittedAt || (attempt && closed));
+    return {name:entry.data().name,submitted,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null};
+  }));
 }
