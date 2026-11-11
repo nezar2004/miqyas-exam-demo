@@ -95,6 +95,16 @@ button,input,select,textarea,a{transition:background-color .16s,border-color .16
 button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible{outline-color:#168264}
 .choice:has(input:checked){border-color:#36856c}
 fieldset{min-width:0;border:1px solid var(--line);border-radius:12px;padding:14px;margin:0 0 12px}
+.answer-options > label{max-width:11rem}
+.answer-options > p{margin:.75rem 0}
+.answer-option{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px;padding:8px;border-radius:9px}
+.answer-option[hidden]{display:none}
+.answer-option:has(input:checked){background:#e5f4ea}
+.answer-option > span{align-self:center}
+#question-form label.correct-option{display:flex;align-items:center;min-height:44px;gap:6px;cursor:pointer}
+.correct-option input{appearance:none;display:grid;place-items:center;width:24px;height:24px;min-height:0;margin:0;padding:0;border:1px solid #61786b;border-radius:4px;background:#fff;cursor:pointer}
+.correct-option input:checked{background:#16714a;border-color:#16714a}
+.correct-option input:checked::after{content:'';width:6px;height:11px;border:solid #fff;border-width:0 2px 2px 0;transform:translateY(-1px) rotate(45deg)}
 th{background:#f1f6f2}
 .signed-out main{max-width:1260px;padding:18px clamp(16px,4vw,50px) 20px}
 .public-head,.public-footer{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px 0}

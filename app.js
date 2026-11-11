@@ -158,13 +158,37 @@ function exams() {
       ${student ? done ? button('عرض النتيجة','page','results') : scheduled ? '' : button(db.attempts[attemptKey(exam.id)]?'متابعة الامتحان':'ابدأ الامتحان','start',exam.id,true) : ''}</div></section>`;
     }).join('');
 }
+function answerOption(index, fixedAnswer) {
+  const number=index+1;
+  const label=fixedAnswer || 'الخيار '+number;
+  return `<div class="answer-option" ${!fixedAnswer && index>=4?'hidden':''}>
+    ${fixedAnswer?`<span>${label}</span>`:`<label>${label}<input name="option" maxlength="200" required ${index>=4?'disabled':''}></label>`}
+    <label class="correct-option"><input type="radio" name="${fixedAnswer?'correctBoolean':'correct'}" value="${index}" aria-label="تحديد ${label} كإجابة صحيحة" required ${!fixedAnswer && index>=4?'disabled':''}><span>صحيحة</span></label>
+  </div>`;
+}
+function questionFromForm(form) {
+  const boolean=form.get('type')==='boolean';
+  const options=boolean?['صح','خطأ']:form.getAll('option').map(value=>value.trim());
+  const selection=form.get(boolean?'correctBoolean':'correct');
+  const correct=selection===null?-1:Number(selection);
+  const prompt=form.get('prompt').trim();
+  if (!prompt || ![2,4,6].includes(options.length) || options.some(value=>!value) || !options[correct]) {
+    throw new Error('اكتب السؤال وكل الخيارات، وحدّد إجابة صحيحة واحدة.');
+  }
+  return {prompt,options,correct,points:Number(form.get('points'))};
+}
 function bank() {
   return hero('أدوات المدرّس','بنك الأسئلة','أضف أسئلة اختيار من متعدد أو صح وخطأ لاستخدامها في امتحاناتك.') +
     `<section class="card"><h2>إضافة سؤال</h2><form id="question-form">
     <label>نوع السؤال<select id="question-type" name="type"><option value="multiple">اختيار من متعدد</option><option value="boolean">صح أو خطأ</option></select></label>
     <label>نص السؤال<textarea name="prompt" required maxlength="400"></textarea></label>
-    <label id="options-label">الخيارات (كل خيار بسطر)<textarea name="options" required maxlength="700" rows="3"></textarea></label>
-    <div class="grid"><label>رقم الإجابة الصحيحة<input name="correct" type="number" min="1" value="1" required></label><label>العلامة<input name="points" type="number" min="1" max="100" value="1" required></label></div>
+    <fieldset id="multiple-options" class="answer-options"><legend>خيارات الإجابة</legend>
+    <label>عدد الخيارات<select id="option-count"><option value="2">٢</option><option value="4" selected>٤</option><option value="6">٦</option></select></label>
+    <p class="muted">حدّد مربع الإجابة الصحيحة.</p>
+    ${Array.from({length:6},(_,index)=>answerOption(index)).join('')}</fieldset>
+    <fieldset id="boolean-options" class="answer-options" hidden disabled><legend>الإجابة الصحيحة</legend>
+    ${['صح','خطأ'].map((answer,index)=>answerOption(index,answer)).join('')}</fieldset>
+    <label>العلامة<input name="points" type="number" min="1" max="100" value="1" required></label>
     <div><button class="primary">حفظ السؤال</button></div></form></section>
     <section class="card"><h2>الأسئلة المحفوظة</h2>${table(['السؤال','الإجابة الصحيحة','العلامة'], db.questions.map(q=>[esc(q.prompt),esc(q.options[q.correct]),q.points]))}</section>`;
 }
@@ -328,9 +352,21 @@ document.addEventListener('click',event=>{
 document.addEventListener('change',event=>{
   const field=event.target;
   if (field.id==='question-type') {
-    const label=document.querySelector('#options-label');
-    label.hidden=field.value==='boolean';
-    label.querySelector('textarea').required=!label.hidden;
+    const boolean=field.value==='boolean';
+    const multipleOptions=document.querySelector('#multiple-options');
+    const booleanOptions=document.querySelector('#boolean-options');
+    multipleOptions.hidden=multipleOptions.disabled=boolean;
+    booleanOptions.hidden=booleanOptions.disabled=!boolean;
+  }
+  if (field.id==='option-count') {
+    const count=Number(field.value);
+    document.querySelectorAll('#multiple-options .answer-option').forEach((row,index)=>{
+      row.hidden=index>=count;
+      row.querySelectorAll('input').forEach(input=>{
+        input.disabled=row.hidden;
+        if (row.hidden && input.type==='radio') input.checked=false;
+      });
+    });
   }
   if (field.name==='answer' && page==='attempt') {
     if (busy) {render();return;}
@@ -370,11 +406,7 @@ document.addEventListener('submit',event=>{
           return;
         }
         if (event.target.id==='question-form') {
-          const options=values.type==='boolean'?['صح','خطأ']:String(values.options).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-          const correct=Number(values.correct)-1;
-          const prompt=values.prompt.trim();
-          if (!prompt || options.length<2 || options.length>10 || !options[correct]) throw new Error('أدخل نص السؤال وخيارين على الأقل ورقم الإجابة الصحيحة.');
-          await firebase.addQuestion({prompt,options,correct,points:Number(values.points)});
+          await firebase.addQuestion(questionFromForm(form));
           await loadFirebaseAccount(account);
           render();
           toast('تم حفظ السؤال.');
@@ -432,8 +464,7 @@ document.addEventListener('submit',event=>{
           toast('تم إنشاء حساب المدرّس.');
           break;
         case 'question-form': {
-          const options=values.type==='boolean'?['صح','خطأ']:String(values.options).split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
-          update(await api('questions',{prompt:values.prompt,options,correct:Number(values.correct)-1,points:Number(values.points)}));
+          update(await api('questions',questionFromForm(form)));
           render();
           toast('تم حفظ السؤال.');
           break;
