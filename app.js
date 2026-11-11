@@ -43,9 +43,33 @@ const notice = document.querySelector('#notice');
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char]);
 const button = (label, action, id = '', primary = false) => `<button type="button" class="${primary ? 'primary' : ''}" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
 const hero = (tag, title, description) => `<section class="hero"><div class="eyebrow">${tag}</div><h1>${title}</h1><p>${description}</p></section>`;
-const metric = (label, value) => `<div class="card metric-card"><span class="metric-icon">${icon('chart')}</span><span class="muted">${label}</span><strong class="metric">${value}</strong></div>`;
-const table = (headers, rows) => `<div class="table"><table><thead><tr>${headers.map(x=>`<th scope="col">${x}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map(x=>`<td>${x}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
-const fmt = value => new Date(value).toLocaleString('ar-JO', {dateStyle:'medium', timeStyle:'short'});
+const num = (value, arabic = false) => String(value).replace(/[0-9٠-٩]/g, digit => {
+  const index = '٠١٢٣٤٥٦٧٨٩'.indexOf(digit);
+  return (arabic ? '٠١٢٣٤٥٦٧٨٩' : '0123456789')[index<0?Number(digit):index];
+});
+const metric = (label, value) => `<div class="card metric-card"><span class="metric-icon">${icon('chart')}</span><span class="muted">${label}</span><strong class="metric">${num(value)}</strong></div>`;
+const table = (headers, rows, emailColumn = -1) => `<div class="table"><table><thead><tr>${headers.map(x=>`<th scope="col">${x}</th>`).join('')}</tr></thead><tbody>${rows.map(row=>`<tr>${row.map((x,index)=>`<td${index===emailColumn?' dir="ltr" class="email-cell"':''}>${x}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+const dateFormat = new Intl.DateTimeFormat('ar-EG-u-nu-latn',{day:'numeric',month:'long',year:'numeric'});
+const timeFormat = new Intl.DateTimeFormat('ar-JO-u-nu-latn',{hour:'numeric',minute:'2-digit',hour12:true});
+function fmt(value) {
+  const date = new Date(value);
+  return Number.isFinite(+date)?num(dateFormat.format(date)+' - '+timeFormat.format(date),true):'—';
+}
+function quantity(count, singular, dual, plural) {
+  if (count===1) return singular;
+  if (count===2) return dual;
+  const remainder=count%100;
+  return num(count)+' '+(count===0 || (remainder>=3 && remainder<=10)?plural:singular);
+}
+function examDates(start, duration) {
+  if (!start) return '';
+  return `<div class="exam-dates"><div>البداية <bdi>${fmt(start)}</bdi></div>
+    ${duration===undefined?'':`<div>النهاية <bdi>${fmt(Date.parse(start)+duration*60000)}</bdi></div>`}</div>`;
+}
+const defaultSections = Array.from({length:10},(_,index)=>'الشعبة '+num(index+1));
+function sectionOptions() {
+  return [...new Set([...defaultSections,...db.exams.map(exam=>exam.section).filter(Boolean)])];
+}
 const completed = (id, student = account?.id) => db.results.find(result=>result.id===id && result.student===student);
 const studentName = r => r.studentName || r.student;
 const question = id => db.questions.find(item=>item.id===id);
@@ -112,7 +136,8 @@ function render() {
   document.querySelector('#account-role').textContent = roleNames[role];
   const navIcons = {exams:'grid',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
   nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['results','analytics','log'].includes(id):id!=='addTeacher').map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
-  document.querySelector('#section').textContent = menus[role][page] || 'تقديم الامتحان';
+  document.querySelector('#workspace-role').textContent = portals[role].title;
+  document.querySelector('#section').textContent = menus[role][page] || (page==='roster'?'كشف الأسماء':'تقديم الامتحان');
   const screens = {exams, results, bank, create, analytics, people, addTeacher, log, attempt, roster};
   view.innerHTML = screens[page]();
   tick();
@@ -125,7 +150,7 @@ function illustration() {
 }
 function gateway() {
   return publicHeader()+`<section class="gateway-hero"><div><span class="kicker">MIQYAS / ASSESSMENT PLATFORM</span><h1>منصة واحدة.<br><em>لكل مرحلة من التقييم.</em></h1><p>أنشئ امتحاناتك، قدّمها، وتابع نتائجها من بوابة مخصصة لكل دور.</p></div>${illustration()}</section>
-    <section class="portal-section"><div class="row"><h2>اختر بوابتك</h2><span class="muted">٣ مساحات عمل</span></div><div class="portal-grid">${Object.entries(portals).map(([id,item])=>`<a class="portal-card" href="?portal=${id}"><span class="row"><span class="portal-icon ${id}">${icon(item.icon)}</span><small dir="ltr">${item.code}</small></span><h3>${item.title}</h3><p>${item.detail}</p><span class="portal-link">الانتقال إلى البوابة ${icon('arrow')}</span></a>`).join('')}</div></section>
+    <section class="portal-section"><div class="row"><h2>اختر بوابتك</h2><span class="muted">${num(Object.keys(portals).length)} مساحات عمل</span></div><div class="portal-grid">${Object.entries(portals).map(([id,item])=>`<a class="portal-card" href="?portal=${id}"><span class="row"><span class="portal-icon ${id}">${icon(item.icon)}</span><small dir="ltr">${item.code}</small></span><h3>${item.title}</h3><p>${item.detail}</p><span class="portal-link">الانتقال إلى البوابة ${icon('arrow')}</span></a>`).join('')}</div></section>
     <footer class="public-footer"><span>مقياس · منصة التقييم الرقمي</span><span>منصة الامتحانات</span></footer>`;
 }
 function fields(includeName) {
@@ -170,7 +195,7 @@ function exams() {
       student?'تابع مواعيد الامتحانات المنشورة وشعبها.':'أنشئ الأسئلة وانشر الامتحانات مع مواعيدها.')+
       `<div class="grid">${metric('الامتحانات المنشورة',db.exams.length)}${metric('المواعيد القادمة',upcoming)}${student?'':metric('أسئلة في البنك',db.questions.length)}</div>
       <div class="row"><h2>${student?'جدول الامتحانات':'الامتحانات المنشورة'}</h2><div class="actions">${button('تحديث القائمة','refresh-exams')}${student?'':button('إنشاء امتحان','page','create',true)}</div></div>
-      ${db.exams.length?db.exams.map(exam=>`<section class="card"><span class="badge">${esc(exam.section)}</span><h3>${esc(exam.title)}</h3><p>البداية ${fmt(exam.start)}${exam.ready?' · النهاية '+fmt(Date.parse(exam.start)+exam.duration*60000):''}</p><p class="muted">${exam.questionCount} أسئلة · ${exam.duration} دقيقة · النجاح ${exam.pass}%</p>
+      ${db.exams.length?db.exams.map(exam=>`<section class="card"><span class="badge">${esc(exam.section)}</span><h3>${esc(exam.title)}</h3>${examDates(exam.start,exam.ready?exam.duration:undefined)}<p class="muted">${quantity(exam.questionCount,'سؤال','سؤالان','أسئلة')} · ${quantity(exam.duration,'دقيقة','دقيقتان','دقائق')} · النجاح <bdi dir="ltr">${num(exam.pass)}%</bdi></p>
         ${student?studentExamAction(exam):teacherExamActions(exam)}</section>`).join(''):'<p class="card">ما في امتحانات منشورة حاليًا.</p>'}`;
   }
   const resultCount = student ? db.results.filter(r=>r.student===account.id).length : db.results.length;
@@ -181,7 +206,7 @@ function exams() {
     db.exams.map(exam=>{
       const done = completed(exam.id);
       const scheduled = exam.start && Date.parse(exam.start)>Date.now();
-      return `<section class="card"><div class="row"><div><span class="badge ${done?'ok':''}">${done?'تم التسليم':scheduled?'مجدول':'متاح'}</span><h3>${esc(exam.title)}</h3><p class="muted">${exam.ids.length} أسئلة · ${exam.duration} دقيقة · النجاح ${exam.pass}%${exam.start?' · '+fmt(exam.start):''}</p></div>
+      return `<section class="card"><div class="row"><div><span class="badge ${done?'ok':''}">${done?'تم التسليم':scheduled?'مجدول':'متاح'}</span><h3>${esc(exam.title)}</h3>${examDates(exam.start,exam.duration)}<p class="muted">${quantity(exam.ids.length,'سؤال','سؤالان','أسئلة')} · ${quantity(exam.duration,'دقيقة','دقيقتان','دقائق')} · النجاح <bdi dir="ltr">${num(exam.pass)}%</bdi></p></div>
       ${student ? done ? button('عرض النتيجة','page','results') : scheduled ? '' : button(db.attempts[attemptKey(exam.id)]?'متابعة الامتحان':'ابدأ الامتحان','start',exam.id,true) : ''}</div></section>`;
     }).join('');
 }
@@ -202,7 +227,7 @@ function studentExamAction(exam) {
   if (!exam.ready) return '<p class="muted">بانتظار تفعيل التقديم من المدرّس.</p>';
   if (saved?.submittedAt) {
     const grade=grades.get(exam.id);
-    return grade?`<span class="badge ${grade.passed?'ok':'warn'}">${grade.earned} / ${grade.total} · ${grade.percent}% · ${grade.passed?'ناجح':'دون علامة النجاح'}</span>`
+    return grade?`<span class="badge ${grade.passed?'ok':'warn'}"><bdi dir="ltr">${num(grade.earned)} / ${num(grade.total)}</bdi> · <bdi dir="ltr">${num(grade.percent)}%</bdi> · ${grade.passed?'ناجح':'دون علامة النجاح'}</span>`
       :`<div class="actions"><span class="badge ok">تم التسليم</span>${button('عرض العلامة','grade',exam.id)}</div>`;
   }
   if (saved?.startedAt?.toMillis()<start) return button('عرض علامة المحاولة السابقة','grade',exam.id);
@@ -233,12 +258,12 @@ function roster() {
     <section class="card"><div class="row"><h2>الطلاب والعلامات</h2>${button('تحديث الكشف','roster',exam.id)}</div>
     ${entries.length?table(['اسم الطالب','الحالة','العلامة'],entries.map(entry=>[
       esc(entry.name),entry.submitted?'انتهت المحاولة':'بدأ الامتحان',
-      entry.grade?`${entry.grade.earned} / ${entry.grade.total} · ${entry.grade.percent}%`:'—'
+      entry.grade?`<bdi dir="ltr">${num(entry.grade.earned)} / ${num(entry.grade.total)}</bdi> · <bdi dir="ltr">${num(entry.grade.percent)}%</bdi>`:'—'
     ])):'<p>لسه ما في محاولات مسجّلة بكشف هالامتحان.</p>'}</section>`;
 }
 function answerOption(index, fixedAnswer, count, existing) {
   const number=index+1;
-  const label=fixedAnswer || 'الخيار '+number;
+  const label=fixedAnswer || 'الخيار '+num(number);
   const hidden=!fixedAnswer && index>=count;
   return `<div class="answer-option" ${hidden?'hidden':''}>
     ${fixedAnswer?`<span>${label}</span>`:`<label>${label}<input name="option" maxlength="200" value="${esc(existing?.options[index] ?? '')}" required ${hidden?'disabled':''}></label>`}
@@ -266,7 +291,7 @@ function bank() {
     <label>نوع السؤال<select id="question-type" name="type"><option value="multiple">اختيار من متعدد</option><option value="boolean" ${boolean?'selected':''}>صح أو خطأ</option></select></label>
     <label>نص السؤال<textarea name="prompt" required maxlength="400">${esc(existing?.prompt ?? '')}</textarea></label>
     <fieldset id="multiple-options" class="answer-options" ${boolean?'hidden disabled':''}><legend>خيارات الإجابة</legend>
-    <label>عدد الخيارات<select id="option-count">${counts.map(n=>`<option value="${n}" ${n===count?'selected':''}>${n.toLocaleString('ar-JO')}</option>`).join('')}</select></label>
+    <label>عدد الخيارات<select id="option-count">${counts.map(n=>`<option value="${n}" ${n===count?'selected':''}>${num(n)}</option>`).join('')}</select></label>
     <p class="muted">حدّد مربع الإجابة الصحيحة.</p>
     ${Array.from({length:Math.max(6,count)},(_,index)=>answerOption(index,null,count,existing)).join('')}</fieldset>
     <fieldset id="boolean-options" class="answer-options" ${boolean?'':'hidden disabled'}><legend>الإجابة الصحيحة</legend>
@@ -275,19 +300,19 @@ function bank() {
     <div class="actions"><button class="primary">${existing?'حفظ التعديل':'حفظ السؤال'}</button>${existing?button('إلغاء التعديل','cancel-question-edit'):''}</div></form></section>
     <section class="card"><h2>الأسئلة المحفوظة</h2>${table(
       ['السؤال','الإجابة الصحيحة','العلامة',...(firebasePortal?['الإجراء']:[])],
-      db.questions.map(q=>[esc(q.prompt),esc(q.options[q.correct]),q.points,...(firebasePortal?[button('تعديل','edit-question',q.id)]:[])])
+      db.questions.map(q=>[esc(q.prompt),esc(q.options[q.correct]),num(q.points),...(firebasePortal?[button('تعديل','edit-question',q.id)]:[])])
     )}</section>`;
 }
 function create() {
   if (firebasePortal && !db.questions.length) return hero('أدوات المدرّس','إنشاء امتحان','أضف سؤالًا واحدًا على الأقل لبنك الأسئلة حتى تقدر تنشر امتحان.')+`<div class="card">${button('الانتقال إلى بنك الأسئلة','page','bank',true)}</div>`;
   return hero('أدوات المدرّس','إنشاء امتحان','حدّد قواعد الامتحان واختر الأسئلة من البنك.') +
-    `<section class="card"><form id="exam-form"><label>اسم الامتحان<input name="title" required maxlength="100"></label>
-    ${firebasePortal?'<label>اسم الشعبة<input name="section" required maxlength="80"></label>':''}
+    `<section class="card"><form id="exam-form"><label>اسم الامتحان<input name="title" required minlength="3" maxlength="100"></label>
+    ${firebasePortal?`<label>الشعبة<select name="section" required><option value="">اختر الشعبة</option>${sectionOptions().map(section=>`<option value="${esc(section)}">${esc(section)}</option>`).join('')}</select></label>`:''}
     <div class="grid"><label>المدة بالدقائق<input type="number" name="duration" value="5" min="1" max="180" required></label>
     <label>علامة النجاح (%)<input type="number" name="pass" value="60" min="0" max="100" required></label>
     <label>وقت البداية${firebasePortal?'':' (اختياري)'}<input type="datetime-local" name="start" ${firebasePortal?'required':''}></label></div>
     <label class="choice"><input type="checkbox" name="shuffle"> ترتيب الأسئلة عشوائيًا لكل محاولة</label>
-    <fieldset><legend>أسئلة الامتحان</legend>${db.questions.map(q=>`<label class="choice"><input type="checkbox" name="questions" value="${q.id}">${esc(q.prompt)} · ${q.points} علامة</label>`).join('')}</fieldset>
+    <fieldset><legend>أسئلة الامتحان</legend>${db.questions.map(q=>`<label class="choice"><input type="checkbox" name="questions" value="${esc(q.id)}">${esc(q.prompt)} · ${num(q.points)} علامة</label>`).join('')}</fieldset>
     <div><button class="primary">${firebasePortal?'نشر الامتحان':'حفظ الامتحان'}</button></div></form></section>`;
 }
 async function start(id) {
@@ -312,11 +337,11 @@ function attempt() {
   const count = Object.keys(current.answers).length;
   const exam = db.exams.find(item=>item.id===current.examId);
   return hero('امتحان قيد التقديم',esc(exam.title),'إجاباتك تُحفظ تلقائيًا عند اختيارها. يتم التسليم عند انتهاء الوقت.')+
-    `<section class="card"><div class="row"><strong>${count} من ${current.order.length} مُجابة</strong><span class="badge warn">الوقت المتبقي <b id="timer" dir="ltr"></b></span></div>
+    `<section class="card"><div class="row"><strong>${num(count)} من ${num(current.order.length)} مُجابة</strong><span class="badge warn">الوقت المتبقي <b id="timer" dir="ltr"></b></span></div>
     <progress aria-label="الأسئلة المجابة" value="${count}" max="${current.order.length}"></progress>
-    <div class="palette">${current.order.map((id,index)=>`<button data-action="jump" data-id="${index}" class="${current.review[id]?'review':id in current.answers?'answered':''}" aria-label="السؤال ${index+1}${id in current.answers?'، تمت إجابته':''}${current.review[id]?'، للمراجعة':''}" ${index===position?'aria-current="step"':''}>${index+1}</button>`).join('')}</div>
+    <div class="palette">${current.order.map((id,index)=>`<button data-action="jump" data-id="${index}" class="${current.review[id]?'review':id in current.answers?'answered':''}" aria-label="السؤال ${num(index+1)}${id in current.answers?'، تمت إجابته':''}${current.review[id]?'، للمراجعة':''}" ${index===position?'aria-current="step"':''}>${num(index+1)}</button>`).join('')}</div>
     <small class="muted">أخضر = مُجاب · برتقالي = للمراجعة</small></section>
-    <section class="card"><fieldset><legend>السؤال ${position+1} · ${q.points} علامة</legend><h2>${esc(q.prompt)}</h2>
+    <section class="card"><fieldset><legend>السؤال ${num(position+1)} · ${num(q.points)} علامة</legend><h2>${esc(q.prompt)}</h2>
     ${q.options.map((choice,index)=>`<label class="choice"><input type="radio" name="answer" value="${index}" ${current.answers[q.id]===index?'checked':''}>${esc(choice)}</label>`).join('')}</fieldset>
     <div class="row"><div class="actions">${position>0?button('السابق','jump',position-1):''}${position+1<current.order.length?button('التالي','jump',position+1,true):''}${button(current.review[q.id]?'إزالة علامة المراجعة':'علّم للمراجعة','review')}</div>${button('تسليم الامتحان','finish')}</div></section>`;
 }
@@ -346,7 +371,7 @@ function tick() {
   const timer=document.querySelector('#timer');
   if (!timer || !db?.attempts[active]) return;
   const seconds=Math.max(0,Math.ceil((db.attempts[active].deadline-Date.now())/1000));
-  timer.textContent=[Math.floor(seconds/60),seconds%60].map(n=>String(n).padStart(2,'0')).join(':');
+  timer.textContent=[Math.floor(seconds/60),seconds%60].map(n=>num(n).padStart(2,'0')).join(':');
   if (!seconds && !busy && Date.now()>=nextExpiryCheck) {
     nextExpiryCheck=Date.now()+5000;
     perform(finishAttempt);
@@ -355,20 +380,20 @@ function tick() {
 function results() {
   const own = db.results.filter(result=>result.student===account.id);
   return hero('لوحة الطالب','نتائج الامتحانات','راجع علامتك والإجابات التي سلّمتها.')+
-    (own.length ? own.map(r=>`<section class="card"><div class="row"><h2>${esc(r.title)}</h2><span class="badge ${r.passed?'ok':'warn'}">${r.passed?'ناجح':'لم ينجح'} · ${r.earned}/${r.total} · ${r.percent}%</span></div>
-    ${table(['السؤال','إجابتك','العلامة'],r.details.map(q=>[esc(q.prompt),esc(q.selected || 'بدون إجابة'),q.earned+'/'+q.points]))}</section>`).join('') : '<p class="card">ما في نتائج بعد. قدّم امتحانًا لتظهر نتيجتك هون.</p>');
+    (own.length ? own.map(r=>`<section class="card"><div class="row"><h2>${esc(r.title)}</h2><span class="badge ${r.passed?'ok':'warn'}">${r.passed?'ناجح':'لم ينجح'} · <bdi dir="ltr">${num(r.earned)}/${num(r.total)}</bdi> · <bdi dir="ltr">${num(r.percent)}%</bdi></span></div>
+    ${table(['السؤال','إجابتك','العلامة'],r.details.map(q=>[esc(q.prompt),esc(q.selected || 'بدون إجابة'),'<bdi dir="ltr">'+num(q.earned)+'/'+num(q.points)+'</bdi>']))}</section>`).join('') : '<p class="card">ما في نتائج بعد. قدّم امتحانًا لتظهر نتيجتك هون.</p>');
 }
 function analytics() {
   const r = db.results;
-  const average = r.length ? Math.round(r.reduce((sum,item)=>sum+item.percent,0)/r.length)+'%' : '—';
-  const pass = r.length ? Math.round(r.filter(item=>item.passed).length*100/r.length)+'%' : '—';
+  const average = r.length ? num(Math.round(r.reduce((sum,item)=>sum+item.percent,0)/r.length))+'%' : '—';
+  const pass = r.length ? num(Math.round(r.filter(item=>item.passed).length*100/r.length))+'%' : '—';
   return hero('لوحة المدرّس','تحليل النتائج','اطّلع على متوسط الدرجات ونسبة النجاح وتوزيع العلامات في امتحاناتك.')+
     `<div class="grid">${metric('عدد التسليمات',r.length)}${metric('متوسط العلامات',average)}${metric('نسبة النجاح',pass)}</div>
     <section class="card"><h2>توزيع الدرجات</h2>${[[0,49],[50,74],[75,100]].map(([min,max])=>{
       const count = r.filter(item=>item.percent>=min && item.percent<(max===100?101:max+1)).length;
-      return `<div class="row"><span dir="ltr">${min}–${max}%</span><strong>${count}</strong></div><progress aria-label="عدد العلامات من ${min} إلى ${max}" max="${r.length||1}" value="${count}"></progress>`;
+      return `<div class="row"><span dir="ltr">${num(min)}–${num(max)}%</span><strong>${num(count)}</strong></div><progress aria-label="عدد العلامات من ${num(min)} إلى ${num(max)}" max="${r.length||1}" value="${count}"></progress>`;
     }).join('')}</section>
-    <section class="card"><div class="row"><h2>سجل التسليمات</h2>${r.length?button('تصدير CSV','export'):''}</div>${r.length?table(['الطالب','الامتحان','العلامة','النتيجة','وقت التسليم'],r.map(x=>[esc(studentName(x)),esc(x.title),x.percent+'%',x.passed?'ناجح':'لم ينجح',fmt(x.at)])):'<p>لا يوجد تسليمات بعد.</p>'}</section>`;
+    <section class="card"><div class="row"><h2>سجل التسليمات</h2>${r.length?button('تصدير CSV','export'):''}</div>${r.length?table(['الطالب','الامتحان','العلامة','النتيجة','وقت التسليم'],r.map(x=>[esc(studentName(x)),esc(x.title),'<bdi dir="ltr">'+num(x.percent)+'%</bdi>',x.passed?'ناجح':'لم ينجح',fmt(x.at)])):'<p>لا يوجد تسليمات بعد.</p>'}</section>`;
 }
 function people() {
   if (firebasePortal) {
@@ -376,7 +401,7 @@ function people() {
       ${entries.length?table(manage?['الاسم','البريد','الإجراء']:['الاسم','البريد'],entries.map(person=>[
         esc(person.name || '—'),esc(person.email || '—'),
         ...(manage?[button('إلغاء صلاحية المدرّس','remove-teacher',person.id)]:[])
-      ])):'<p class="muted">ما في حسابات بهالقائمة حاليًا.</p>'}</section>`;
+      ]),1):'<p class="muted">ما في حسابات بهالقائمة حاليًا.</p>'}</section>`;
     return hero('لوحة الإدارة','الحسابات والصلاحيات','راجع الطلاب والمدرّسين والمديرين وأدر صلاحية التدريس.')+
       `<div class="grid">${metric('الطلاب',db.students.length)}${metric('المدرّسون',db.teachers.length)}${metric('المديرون',db.admins.length)}</div>
       <div class="actions">${button('إضافة مدرّس','page','addTeacher',true)}${button('تحديث القوائم','refresh-exams')}</div>
@@ -384,7 +409,7 @@ function people() {
   }
   return hero('لوحة الإدارة','حسابات المستخدمين','أضف المدرّسين وأدر حالة الحسابات.')+
     `<section class="card"><h2>إضافة مدرّس</h2><form id="teacher-form">${fields(true)}<div><button class="primary">حفظ حساب المدرّس</button></div></form></section>
-    <section class="card">${table(['الاسم','البريد','الدور','الحالة','الإجراء'],db.people.map(p=>[esc(p.name),esc(p.email),roleNames[p.role],p.enabled?'مفعّل':'موقوف',p.role==='admin'?'—':button(p.enabled?'إيقاف':'تفعيل','toggle',p.id)]))}</section>`;
+    <section class="card">${table(['الاسم','البريد','الدور','الحالة','الإجراء'],db.people.map(p=>[esc(p.name),esc(p.email),roleNames[p.role],p.enabled?'مفعّل':'موقوف',p.role==='admin'?'—':button(p.enabled?'إيقاف':'تفعيل','toggle',p.id)]),1)}</section>`;
 }
 function addTeacher() {
   return hero('لوحة الإدارة','إضافة مدرّس','أنشئ حسابًا جديدًا للمدرّس حتى يدخل من بوابته مباشرة.')+
@@ -600,7 +625,8 @@ document.addEventListener('submit',event=>{
           const ids=form.getAll('questions');
           const title=values.title.trim();
           const section=values.section.trim();
-          if (!title || !section || !ids.length || ids.length>100) throw new Error('أدخل الاسم والشعبة واختر من سؤال واحد إلى 100 سؤال.');
+          if (title.length<3) throw new Error('اسم الامتحان لازم يكون 3 أحرف على الأقل.');
+          if (!sectionOptions().includes(section) || !ids.length || ids.length>100) throw new Error('اختر الشعبة ومن سؤال واحد إلى 100 سؤال.');
           await firebase.publishExam({title,section,ids,start:new Date(values.start).toISOString(),duration:Number(values.duration),pass:Number(values.pass),shuffle:form.has('shuffle')},db.questions);
           await loadFirebaseAccount(account);
           navigate('exams');
@@ -654,7 +680,8 @@ document.addEventListener('submit',event=>{
           break;
         }
         case 'exam-form':
-          update(await api('exams',{title:values.title,ids:form.getAll('questions'),start:values.start?new Date(values.start).toISOString():'',duration:Number(values.duration),pass:Number(values.pass),shuffle:form.has('shuffle')}));
+          if (values.title.trim().length<3) throw new Error('اسم الامتحان لازم يكون 3 أحرف على الأقل.');
+          update(await api('exams',{title:values.title.trim(),ids:form.getAll('questions'),start:values.start?new Date(values.start).toISOString():'',duration:Number(values.duration),pass:Number(values.pass),shuffle:form.has('shuffle')}));
           page='exams';
           render();
           toast('تم نشر الامتحان.');

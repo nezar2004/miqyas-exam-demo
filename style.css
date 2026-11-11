@@ -83,6 +83,8 @@ svg{width:22px;height:22px;flex:none;vertical-align:middle}
 .dot{background:#399c75}
 main{width:100%;max-width:1500px;margin-inline:auto}
 .top{background:#fff;border:1px solid var(--line);border-radius:14px;padding:10px 16px;min-height:52px}
+.email-cell{text-align:right;unicode-bidi:isolate}
+.exam-dates{display:grid;gap:4px;margin:.5rem 0}
 .hero{border-radius:20px;background:radial-gradient(ellipse at 0% 90%,#235a46,transparent 63%),var(--forest);padding:30px clamp(22px,4vw,44px)}
 .hero p,.eyebrow{color:#d2e7db}
 .card{border-radius:15px;box-shadow:0 1px 2px #10281f08}

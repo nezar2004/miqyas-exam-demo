@@ -4,8 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>مقياس | منصة الامتحانات</title>
-<link rel="stylesheet" href="style.css?v=12">
-<script src="app.js?v=16" defer></script>
+<link rel="stylesheet" href="style.css?v=17">
+<script src="app.js?v=17" defer></script>
 </head>
 <body class="signed-out">
 <aside class="sidebar">
@@ -15,7 +15,7 @@
   <button id="logout" type="button">تسجيل الخروج</button>
   <div class="side-note"><span class="dot"></span> منصة التقييم الرقمي</div>
 </aside>
-<main><header class="top"><span>مساحة العمل / <strong id="section"></strong></span><button type="button" id="back">رجوع</button></header>
+<main><header class="top"><div role="navigation" aria-label="مسار الصفحة"><span id="workspace-role"></span> <span aria-hidden="true">/</span> <strong id="section" aria-current="page"></strong></div><button type="button" id="back">رجوع</button></header>
 <div id="view"></div>
 <p id="notice" role="status" aria-live="polite"></p>
 </main>
