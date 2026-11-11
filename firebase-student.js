@@ -3,7 +3,7 @@ import {
   browserSessionPersistence, createUserWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence, setPersistence,
   sendPasswordResetEmail, signInWithEmailAndPassword, signOut
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
-import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, query, runTransaction, serverTimestamp, setDoc, Timestamp, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
+import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
 
 const app=initializeApp({
   apiKey:'AIzaSyDi06jtrahqfRYpdRG523x3aJpqkullLsc',
@@ -128,22 +128,81 @@ function bank() {
 export async function loadExams(portal) {
   const papers=collection(db,'publishedExams');
   const source=portal==='teacher'?query(papers,where('owner','==',auth.currentUser.uid),limit(100)):query(papers,limit(100));
-  const [exams,questions]=await Promise.all([getDocs(source),portal==='teacher'?getDocs(bank()):null]);
+  const [exams,questions,attempts]=await Promise.all([
+    getDocs(source),portal==='teacher'?getDocs(bank()):null,
+    portal==='student'?getDocs(collection(db,'studentProfiles',auth.currentUser.uid,'attempts')):null
+  ]);
   return {
     exams:exams.docs.map(item=>({...item.data(),id:item.id,start:item.data().start.toDate().toISOString()}))
       .sort((a,b)=>Date.parse(a.start)-Date.parse(b.start)),
     questions:questions?.docs.map(item=>({...item.data(),id:item.id})) || [],
-    results:[],attempts:{}
+    results:[],attempts:{},
+    submissions:Object.fromEntries(attempts?.docs.map(item=>[item.id,item.data()]) || [])
   };
 }
 export async function addQuestion(question) {
   await addDoc(bank(),question);
 }
-export async function publishExam({ids,shuffle,start,...metadata}) {
+function examQuestions(ids,bankQuestions) {
+  return ids.map(id=>{
+    const item=bankQuestions.find(question=>question.id===id);
+    if (!item) throw new Error('بعض أسئلة الامتحان غير موجودة في البنك.');
+    return {id,prompt:item.prompt,options:item.options,points:item.points};
+  });
+}
+export async function publishExam({ids,shuffle,start,...metadata},bankQuestions) {
   const owner=auth.currentUser.uid;
   const exam=doc(collection(db,'publishedExams'));
   const batch=writeBatch(db);
-  batch.set(exam,{...metadata,owner,questionCount:ids.length,start:Timestamp.fromDate(new Date(start)),publishedAt:serverTimestamp()});
+  batch.set(exam,{...metadata,owner,questionCount:ids.length,start:Timestamp.fromDate(new Date(start)),publishedAt:serverTimestamp(),ready:true});
   batch.set(doc(db,'teacherBanks',owner,'papers',exam.id),{ids,shuffle});
+  batch.set(doc(db,'examContent',exam.id),{questions:examQuestions(ids,bankQuestions),shuffle});
   await batch.commit();
+}
+
+export async function enableExam(id,start,bankQuestions) {
+  const owner=auth.currentUser.uid;
+  const paper=await getDoc(doc(db,'teacherBanks',owner,'papers',id));
+  if (!paper.exists()) throw new Error('تعذّر العثور على أسئلة الامتحان.');
+  const {ids,shuffle}=paper.data();
+  const batch=writeBatch(db);
+  batch.update(doc(db,'publishedExams',id),{ready:true,start:Timestamp.fromDate(new Date(start))});
+  batch.set(doc(db,'examContent',id),{questions:examQuestions(ids,bankQuestions),shuffle});
+  await batch.commit();
+}
+
+function submissionRef(id) {
+  return doc(db,'studentProfiles',auth.currentUser.uid,'attempts',id);
+}
+export async function beginAttempt(exam) {
+  const content=await getDoc(doc(db,'examContent',exam.id));
+  if (!content.exists()) throw new Error('أسئلة الامتحان غير متاحة.');
+  const {questions,shuffle}=content.data();
+  const ref=submissionRef(exam.id);
+  const attempt=await runTransaction(db,async transaction=>{
+    const snapshot=await transaction.get(ref);
+    if (snapshot.exists()) return snapshot.data();
+    const initial={startedAt:serverTimestamp(),answers:{},review:{},submittedAt:null};
+    transaction.set(ref,initial);
+    return initial;
+  });
+  const order=questions.map(q=>q.id);
+  if (shuffle) {
+    // Keep the order stable if the student refreshes or resumes.
+    const uid=auth.currentUser.uid;
+    const orderKey=id=>Array.from(uid+id).reduce((hash,char)=>Math.imul(hash^char.charCodeAt(0),16777619),2166136261)>>>0;
+    order.sort((a,b)=>orderKey(a)-orderKey(b) || a.localeCompare(b));
+  }
+  return {questions,attempt:{...attempt,order,examId:exam.id,deadline:Date.parse(exam.start)+exam.duration*60000}};
+}
+export function saveAttemptField(id,field,question,value) {
+  return updateDoc(submissionRef(id),{[field+'.'+question]:value});
+}
+export function submitAttempt(id) {
+  const ref=submissionRef(id);
+  return runTransaction(db,async transaction=>{
+    const saved=await transaction.get(ref);
+    if (!saved.exists()) throw new Error('المحاولة غير موجودة.');
+    if (!saved.data().submittedAt) transaction.update(ref,{submittedAt:serverTimestamp()});
+  });
 }
