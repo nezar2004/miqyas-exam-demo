@@ -1,7 +1,7 @@
 import {deleteApp, initializeApp} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js';
 import {
   browserSessionPersistence, createUserWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence, setPersistence,
-  sendPasswordResetEmail, signInWithEmailAndPassword, signOut
+  reload, sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, updateProfile
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
 import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
 
@@ -11,10 +11,31 @@ const app=initializeApp({
   projectId:'miqyas-exams',
   appId:'1:130457048809:web:61a59657e3adceec294278'
 });
+const appCheckKey=document.querySelector('meta[name="firebase-app-check-site-key"]')?.content.trim();
+async function enableAppCheck(firebaseApp) {
+  if (!appCheckKey) return;
+  const {initializeAppCheck,ReCaptchaV3Provider}=await import('https://www.gstatic.com/firebasejs/12.7.0/firebase-app-check.js');
+  initializeAppCheck(firebaseApp,{provider:new ReCaptchaV3Provider(appCheckKey),isTokenAutoRefreshEnabled:true});
+}
+await enableAppCheck(app);
 const auth=getAuth(app);
 const db=getFirestore(app);
 await setPersistence(auth,browserSessionPersistence);
 await auth.authStateReady();
+const universityEmail=email=>/^[^@\s]+@ses\.yu\.edu\.jo$/i.test(email || '');
+const loginLimitKey='miqyas-login-limit';
+const loginWindow=5*60*1000;
+let loginFailures=[];
+function recentFailures() {
+  try {loginFailures=JSON.parse(localStorage.getItem(loginLimitKey) || '[]');} catch {}
+  if (!Array.isArray(loginFailures)) loginFailures=[];
+  loginFailures=loginFailures.filter(time=>typeof time==='number' && time>Date.now()-loginWindow && time<=Date.now());
+  return loginFailures;
+}
+function storeFailures(failures) {
+  loginFailures=failures;
+  try {localStorage.setItem(loginLimitKey,JSON.stringify(failures));} catch {}
+}
 
 export async function profile(portal='student') {
   const user=auth.currentUser;
@@ -28,8 +49,13 @@ export async function profile(portal='student') {
   if (teacherRole.exists()) return null;
   const adminRole=await getDoc(doc(db,'adminRoles',user.uid));
   if (adminRole.exists()) return null;
+  const eligible=universityEmail(user.email);
+  if (!eligible || !user.emailVerified) return {
+    id:user.uid,email:user.email,role:'student',verification:eligible?'pending':'domain'
+  };
   const ref=doc(db,'studentProfiles',user.uid);
   const saved=await getDoc(ref);
+  if (!saved.exists() && user.displayName) return saveProfile(user.displayName);
   return {id:user.uid,email:user.email,name:saved.data()?.name,role:'student'};
 }
 
@@ -37,6 +63,7 @@ export async function saveProfile(name) {
   const user=auth.currentUser;
   const cleanName=name.trim();
   if (!user || !cleanName || cleanName.length>100) throw new Error('أدخل اسمًا من 1 إلى 100 حرف.');
+  if (!universityEmail(user.email) || !user.emailVerified) throw new Error('أكّد بريدك الجامعي أولًا.');
   const ref=doc(db,'studentProfiles',user.uid);
   const savedName=await runTransaction(db,async tx=>{
     const saved=await tx.get(ref);
@@ -49,22 +76,43 @@ export async function saveProfile(name) {
 
 export async function register({name,email,password}) {
   if (!name.trim() || name.trim().length>100 || password.length<12) throw new Error('أدخل اسمك وكلمة مرور من 12 حرفًا على الأقل.');
-  await createUserWithEmailAndPassword(auth,email.trim(),password);
-  return saveProfile(name);
+  const address=email.trim().toLowerCase();
+  if (!universityEmail(address)) throw new Error('استخدم بريد الجامعة المنتهي بـ @ses.yu.edu.jo.');
+  const {user}=await createUserWithEmailAndPassword(auth,address,password);
+  await updateProfile(user,{displayName:name.trim()});
+  await sendEmailVerification(user);
+  return profile();
 }
 
 export async function login({email,password},portal) {
-  await signInWithEmailAndPassword(auth,email.trim(),password);
-  const account=await profile(portal);
-  if (!account) {
-    await signOut(auth);
-    throw new Error({
-      admin:'هذا الحساب يحتاج تفعيل صلاحية المدير أولًا.',
-      teacher:'هذا الحساب يحتاج تفعيل صلاحية المدرّس أولًا.',
-      student:'استخدم بوابة المدرّس أو المدير للدخول بهذا الحساب.'
-    }[portal]);
+  if (recentFailures().length>=5) throw new Error('محاولات دخول كثيرة. حاول مرة ثانية بعد 5 دقائق.');
+  let account;
+  try {
+    await signInWithEmailAndPassword(auth,email.trim(),password);
+    account=await profile(portal);
+  } catch (error) {
+    if (error.code==='auth/network-request-failed') throw error;
+    if (!error.code?.startsWith('auth/')) throw error;
   }
+  if (!account) {
+    storeFailures([...recentFailures(),Date.now()]);
+    if (auth.currentUser) await signOut(auth);
+    throw new Error('تعذّر تسجيل الدخول. تأكّد من بياناتك والبوابة اللي اخترتها.');
+  }
+  storeFailures([]);
   return account;
+}
+export async function refreshVerification() {
+  const user=auth.currentUser;
+  if (!user) return null;
+  await reload(user);
+  await user.getIdToken(true);
+  return profile();
+}
+export async function resendVerification() {
+  const user=auth.currentUser;
+  if (!user || !universityEmail(user.email)) throw new Error('سجّل الدخول ببريدك الجامعي أولًا.');
+  await sendEmailVerification(user);
 }
 
 export function logout() { return signOut(auth); }
@@ -100,6 +148,7 @@ export async function createTeacher({name,email,password}) {
   }
   const secondary=initializeApp(app.options,'teacher-provisioning');
   try {
+    await enableAppCheck(secondary);
     const teacherAuth=initializeAuth(secondary,{persistence:inMemoryPersistence});
     let credential;
     try {

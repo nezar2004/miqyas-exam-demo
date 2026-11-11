@@ -115,6 +115,22 @@ async function loadFirebaseAccount(next) {
   if (!role || !menus[role][page]) page=role==='admin'?'people':'exams';
 }
 function render() {
+  if (firebasePortal && account?.verification) {
+    document.body.classList.add('signed-out');
+    view.innerHTML=publicHeader()+`<section class="card">
+      <h1>تأكيد البريد الجامعي</h1>
+      <p dir="ltr">${esc(account.email)}</p>
+      <p>${account.verification==='domain'
+        ?'الدخول للامتحانات يتطلب حسابًا ببريد ينتهي بـ ‎@ses.yu.edu.jo‎.'
+        :'افتح رابط التأكيد في بريدك الجامعي، ثم ارجع واضغط «تأكدت من بريدي».'}</p>
+      <div class="actions">
+        ${account.verification==='pending'
+          ?button('تأكدت من بريدي','verify-email','',true)+button('إعادة إرسال رسالة التأكيد','resend-verification')
+          :''}
+        ${button('تسجيل الخروج','student-logout')}
+      </div></section>`;
+    return;
+  }
   if (firebasePortal && account && !account.name) {
     document.body.classList.add('signed-out');
     view.innerHTML=publicHeader()+`<section class="card"><a class="back-link" href="index.html">العودة إلى البوابات</a>
@@ -166,6 +182,7 @@ function login(entry) {
     <form id="${registration?'register-form':'login-form'}">
       ${staticPreview?'<p class="badge warn" role="status">إنشاء الحساب وتسجيل الدخول رح يتفعّلوا بعد نشر خادم مقياس.</p>':''}
       <fieldset ${staticPreview?'disabled':''}>${fields(registration)}</fieldset>
+      ${registration && firebasePortal?'<p class="muted">سجّل ببريد الجامعة المنتهي بـ ‎@ses.yu.edu.jo‎.</p>':''}
       <button class="primary" ${staticPreview?'disabled':''}>${registration?'إنشاء الحساب':'تسجيل الدخول'}</button>
     </form>${firebasePortal && !registration?`<a class="back-link" href="?portal=${portal}&amp;reset=1">نسيت كلمة المرور؟</a>`:''}${links}</section>
     <aside class="login-story"><span class="kicker">MIQYAS / ${entry.code}</span><h2>${entry.title}</h2><p>${entry.detail}</p>${illustration()}<span class="story-foot">مساحة العمل المخصصة · مقياس</span></aside></div>`;
@@ -460,6 +477,21 @@ document.addEventListener('click',event=>{
     perform(async()=>{await firebase.logout();account=undefined;toast('');render();});
     return;
   }
+  if (firebasePortal && account?.verification && target?.dataset.action==='verify-email') {
+    perform(async()=>{
+      await loadFirebaseAccount(await firebase.refreshVerification());
+      render();
+      toast(account?.verification?'لسه البريد غير مؤكّد. افتح رابط التأكيد أولًا.':'تم تأكيد بريدك الجامعي.');
+    });
+    return;
+  }
+  if (firebasePortal && account?.verification==='pending' && target?.dataset.action==='resend-verification') {
+    perform(async()=>{
+      await firebase.resendVerification();
+      toast('تم طلب رسالة تأكيد جديدة. افحص بريدك الجامعي.');
+    });
+    return;
+  }
   if (!target || !account || busy) return;
   const {action,id}=target.dataset;
   toast('');
@@ -565,7 +597,7 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=9');
+        firebase ??= await import('./firebase-student.js?v=10');
         if (event.target.classList.contains('reschedule-exam-form') && role==='teacher') {
           const start=new Date(values.start);
           if (!Number.isFinite(+start) || +start<=Date.now()) throw new Error('اختَر موعد بداية بالمستقبل.');
@@ -642,10 +674,11 @@ document.addEventListener('submit',event=>{
             registration=false;
             history.replaceState(null,'','?portal=student');
           }
-          if (action!=='login') toast('تم حفظ حسابك في مقياس.');
+          if (action==='register') toast('تم إرسال رابط التأكيد إلى بريدك الجامعي.');
+          if (action==='saveProfile') toast('تم حفظ حسابك في مقياس.');
         } catch (error) {
           const messages={
-            'auth/email-already-in-use':'هذا البريد مسجّل. ارجع إلى تسجيل الدخول.',
+            'auth/email-already-in-use':'تعذّر إكمال التسجيل. جرّب تسجيل الدخول أو استعادة كلمة المرور.',
             'auth/invalid-credential':'البريد الإلكتروني أو كلمة المرور غير صحيحة.',
             'auth/network-request-failed':'تعذّر الاتصال. جرّب مرة ثانية.',
             'auth/too-many-requests':'حاول مرة ثانية بعد فترة.',
@@ -693,7 +726,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=9');
+    firebase=await import('./firebase-student.js?v=10');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

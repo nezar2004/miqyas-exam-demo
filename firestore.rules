@@ -68,7 +68,7 @@ service cloud.firestore {
           && exam.questionCount is int && exam.questionCount >= 1 && exam.questionCount <= 100
           && exam.publishedAt == request.time;
       }
-      allow read: if request.auth != null;
+      allow read: if teacher() || admin() || verifiedUniversityEmail();
       allow create: if teacher() && validExam()
         && existsAfter(/databases/$(database)/documents/teacherBanks/$(request.auth.uid)/papers/$(id))
         && request.resource.data.ready == true
@@ -89,8 +89,13 @@ service cloud.firestore {
       return exam.get('ready', false) == true && request.time >= exam.start
         && request.time < exam.start + duration.value(exam.duration, 'm');
     }
+    function verifiedUniversityEmail() {
+      return request.auth != null && request.auth.token.email_verified == true
+        && request.auth.token.email is string
+        && request.auth.token.email.matches('(?i)^[^@ ]+@ses[.]yu[.]edu[.]jo$');
+    }
     function student(uid) {
-      return request.auth != null && request.auth.uid == uid && !teacher() && !admin()
+      return verifiedUniversityEmail() && request.auth.uid == uid && !teacher() && !admin()
         && exists(/databases/$(database)/documents/studentProfiles/$(uid));
     }
     function ownsExam(id) {
@@ -134,8 +139,8 @@ service cloud.firestore {
       function exam() {
         return get(/databases/$(database)/documents/publishedExams/$(id)).data;
       }
-      allow list: if request.auth != null && request.auth.uid == uid;
-      allow get: if request.auth != null && (request.auth.uid == uid || ownsExam(id));
+      allow list: if student(uid);
+      allow get: if student(uid) || ownsExam(id);
       allow create: if student(uid) && duringExam(exam())
         && request.resource.data.keys().hasOnly(['startedAt','answers','review','submittedAt'])
         && request.resource.data.startedAt == request.time
@@ -164,7 +169,7 @@ service cloud.firestore {
       }
       allow get: if ownsProfile() || admin();
       allow list: if admin();
-      allow create: if ownsProfile() && !teacher() && !admin() && validProfile();
+      allow create: if ownsProfile() && verifiedUniversityEmail() && !teacher() && !admin() && validProfile();
     }
   }
 }
