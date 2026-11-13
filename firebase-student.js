@@ -1,6 +1,6 @@
 import {deleteApp, initializeApp} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-app.js';
 import {
-  browserSessionPersistence, createUserWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence, setPersistence,
+  browserSessionPersistence, createUserWithEmailAndPassword, EmailAuthProvider, getAuth, initializeAuth, inMemoryPersistence, reauthenticateWithCredential, setPersistence, updatePassword,
   reload, sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, updateProfile
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
 import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
@@ -72,6 +72,20 @@ export async function saveProfile(name) {
     return cleanName;
   });
   return {id:user.uid,email:user.email,name:savedName,role:'student'};
+}
+
+export async function changeStudentName(name) {
+  const cleanName=name.trim();
+  if (!cleanName || cleanName.length>100) throw new Error('أدخل اسمًا من 1 إلى 100 حرف.');
+  await updateDoc(doc(db,'studentProfiles',auth.currentUser.uid),{name:cleanName});
+  return cleanName;
+}
+
+export async function changeStudentPassword(current,password) {
+  if (password.length<12) throw new Error('كلمة المرور الجديدة لازم تكون 12 حرفًا على الأقل.');
+  const user=auth.currentUser;
+  await reauthenticateWithCredential(user,EmailAuthProvider.credential(user.email,current));
+  await updatePassword(user,password);
 }
 
 export async function register({name,email,password}) {
@@ -378,11 +392,23 @@ export function calculateGrade(key,answers,pass) {
   const percent=total?Math.round(10000*earned/total)/100:0;
   return {earned,total,percent,passed:total>0 && earned*100>=pass*total};
 }
-export async function studentGrade(exam) {
+export async function studentGrade(exam,includeDetails=false) {
   const [key,attempt]=await Promise.all([
     getDoc(doc(db,'examKeys',exam.id)),getDoc(submissionRef(exam.id))
   ]);
-  return key.exists()?calculateGrade(key.data().answers,attempt.data().answers,exam.pass):null;
+  if (!key.exists() || !attempt.data()?.submittedAt) return null;
+  const answers=attempt.data().answers;
+  const correct=key.data().answers;
+  const grade=calculateGrade(correct,answers,exam.pass);
+  if (!includeDetails || Date.now()<Date.parse(exam.start)+exam.duration*60000) return grade;
+  const content=await getDoc(doc(db,'examContent',exam.id));
+  return {...grade,details:content.data()?.questions.map(question=>({
+    prompt:question.prompt,
+    selected:question.options[answers[question.id]],
+    correct:question.options[correct[question.id]?.correct],
+    points:correct[question.id]?.points ?? question.points,
+    earned:answers[question.id]===correct[question.id]?.correct && correct[question.id]?correct[question.id].points:0
+  }))};
 }
 export async function examRoster(exam,bankQuestions) {
   const keyRef=doc(db,'examKeys',exam.id);

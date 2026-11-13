@@ -211,7 +211,11 @@ service cloud.firestore {
       }
       allow get: if request.auth != null &&
         ((teacher() && exam().owner == request.auth.uid)
-        || (student(request.auth.uid) && duringExam(exam()) && (classAccess(exam()) || hasAttempt(id))));
+        || (student(request.auth.uid) && (
+          (duringExam(exam()) && (classAccess(exam()) || hasAttempt(id)))
+          || (request.time >= exam().start + duration.value(exam().duration, 'm')
+            && get(/databases/$(database)/documents/studentProfiles/$(request.auth.uid)/attempts/$(id)).data.submittedAt is timestamp)
+        )));
       allow create: if teacher() && published().owner == request.auth.uid && published().ready == true
         && request.resource.data.keys().hasOnly(['questions', 'shuffle'])
         && request.resource.data.questions is list
@@ -253,6 +257,10 @@ service cloud.firestore {
       allow get: if ownsProfile() || admin();
       allow list: if admin();
       allow create: if ownsProfile() && verifiedUniversityEmail() && !teacher() && !admin() && validProfile();
+      allow update: if student(uid)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 100;
     }
   }
 }

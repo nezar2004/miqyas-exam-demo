@@ -16,6 +16,10 @@ let selectedRoster;
 let editingQuestionId;
 let reschedulingExamId;
 const grades=new Map();
+let examTab='available';
+let resultId;
+let savingAnswer=false;
+let pendingAnswer;
 const roleNames = {student:'طالب', teacher:'مدرّس', admin:'مدير النظام'};
 const portals = {
   student:{title:'بوابة الطالب', code:'01', icon:'cap', detail:'قدّم امتحاناتك وتابع نتائجك في مكان واحد.'},
@@ -33,7 +37,7 @@ const paths = {
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 const menus = {
-  student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي'},
+  student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي', studentProfile:'ملفي الشخصي'},
   teacher:{exams:'إدارة الامتحانات', classes:'الشُعب', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
   admin:{people:'حسابات المستخدمين', addTeacher:'إضافة مدرّس', classes:'إدارة الشُعب', log:'سجل النشاط'}
 };
@@ -152,6 +156,12 @@ async function loadFirebaseAccount(next) {
   const data=next?.name ? await (portal==='admin'?firebase.loadPeople():firebase.loadExams(portal)) : null;
   if (next?.role==='student' && data) {
     await Promise.allSettled(Object.keys(data.submissions).map(id=>firebase.syncParticipant(id,next.name)));
+    const submitted=data.exams.filter(exam=>data.submissions[exam.id]?.submittedAt);
+    await Promise.allSettled(submitted.map(async exam=>{
+      if (grades.has(exam.id)) return;
+      const grade=await firebase.studentGrade(exam);
+      if (grade) grades.set(exam.id,grade);
+    }));
   }
   account=next;
   role=next?.role;
@@ -194,11 +204,11 @@ function render() {
   document.title = portals[role].title+' | مقياس';
   document.querySelector('#account-name').textContent = account.name;
   document.querySelector('#account-role').textContent = roleNames[role];
-  const navIcons = {exams:'grid',classes:'cap',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
-  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['results','analytics','log'].includes(id):!['addTeacher','classes'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
+  const navIcons = {exams:'grid',classes:'cap',results:'chart',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
+  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['analytics','log'].includes(id):!['addTeacher','classes','studentProfile'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#workspace-role').textContent = portals[role].title;
   document.querySelector('#section').textContent = menus[role][page] || (page==='roster'?'كشف الأسماء':'تقديم الامتحان');
-  const screens = {exams, classes, results, bank, create, analytics, people, addTeacher, log, attempt, roster};
+  const screens = {exams, classes, results, studentProfile, bank, create, analytics, people, addTeacher, log, attempt, roster};
   view.innerHTML = screens[page]();
   tick();
 }
@@ -244,8 +254,41 @@ function resetPassword() {
   </section></div>`;
 }
 let nextExamBoundary=Infinity;
+function studentDashboard() {
+  const now=Date.now();
+  const groups={available:[],upcoming:[],complete:[]};
+  const boundaries=[];
+  for (const exam of db.exams) {
+    const start=Date.parse(exam.start);
+    const end=start+exam.duration*60000;
+    const saved=db.submissions[exam.id];
+    if (exam.ready) boundaries.push(start,end);
+    const status=saved?.submittedAt || (exam.ready && (end<=now || saved?.startedAt?.toMillis()<start))?'complete':
+      !exam.ready || start>now?'upcoming':'available';
+    groups[status].push(exam);
+  }
+  nextExamBoundary=Math.min(Infinity,...boundaries.filter(time=>time>now));
+  const next=groups.upcoming.find(exam=>exam.ready);
+  const marks=groups.complete.map(exam=>grades.get(exam.id)).filter(Boolean);
+  const average=marks.length?Math.round(marks.reduce((sum,mark)=>sum+mark.percent,0)/marks.length)+'%':'—';
+  const tabs={available:'متاحة',upcoming:'قادمة',complete:'مكتملة'};
+  return hero('لوحة الطالب','أهلاً، '+esc(account.name),'تابع مواعيد امتحاناتك ونتائجك.')
+    + `<div class="grid">${metric('متاح الآن',groups.available.length)}${metric('قادم',groups.upcoming.length)}
+      ${metric('مكتمل',groups.complete.length)}${metric('المعدل العام',average)}</div>
+      ${next?`<section class="card"><strong>الامتحان القادم · ${esc(next.title)}</strong>
+      <p class="muted">يبدأ بعد <bdi id="exam-countdown" data-start="${Date.parse(next.start)}"></bdi></p></section>`:''}
+      <div class="row"><div class="actions" role="group" aria-label="حالة الامتحانات">${Object.entries(tabs).map(([id,label])=>
+        `<button type="button" data-action="exam-tab" data-id="${id}" aria-pressed="${examTab===id}" class="${examTab===id?'primary':''}">${label}</button>`).join('')}</div>
+        ${button('تحديث القائمة','refresh-exams')}</div>
+      ${groups[examTab].map(exam=>`<section class="card">${examClassLabels(exam)}<h3>${esc(exam.title)}</h3>
+      ${examDates(exam.start,exam.ready?exam.duration:undefined)}<p class="muted">${quantity(exam.questionCount,'سؤال','سؤالان','أسئلة')} ·
+      ${quantity(exam.duration,'دقيقة','دقيقتان','دقائق')} · النجاح <bdi dir="ltr">${num(exam.pass)}%</bdi></p>
+      ${studentExamAction(exam)}</section>`).join('') || `<section class="card student-empty"><h3>ما في امتحانات ${tabs[examTab]} حاليًا</h3>
+      ${!db.classes.length?button('انضم إلى شعبة','page','classes'):''}</section>`}`;
+}
 function exams() {
   const student = role === 'student';
+  if (firebasePortal && student) return studentDashboard();
   if (firebasePortal) {
     const now=Date.now();
     const upcoming=db.exams.filter(exam=>Date.parse(exam.start)>now).length;
@@ -292,7 +335,7 @@ function studentExamAction(exam) {
   if (!exam.ready) return '<p class="muted">بانتظار تفعيل التقديم من المدرّس.</p>';
   if (saved?.submittedAt) {
     const grade=grades.get(exam.id);
-    return grade?`<span class="badge ${grade.passed?'ok':'warn'}"><bdi dir="ltr">${num(grade.earned)} / ${num(grade.total)}</bdi> · <bdi dir="ltr">${num(grade.percent)}%</bdi> · ${grade.passed?'ناجح':'دون علامة النجاح'}</span>`
+    return grade?`<div class="actions"><span class="badge ${grade.passed?'ok':'warn'}"><bdi dir="ltr">${num(grade.earned)} / ${num(grade.total)}</bdi> · <bdi dir="ltr">${num(grade.percent)}%</bdi> · ${grade.passed?'ناجح':'دون علامة النجاح'}</span>${button('تفاصيل النتيجة','grade',exam.id)}</div>`
       :`<div class="actions"><span class="badge ok">تم التسليم</span>${button('عرض العلامة','grade',exam.id)}</div>`;
   }
   if (saved?.startedAt?.toMillis()<start) return button('عرض علامة المحاولة السابقة','grade',exam.id);
@@ -310,9 +353,10 @@ async function showGrade(id) {
     saved.submittedAt=true;
   }
   await firebase.syncParticipant(id,account.name);
-  const grade=await firebase.studentGrade(exam);
+  const grade=await firebase.studentGrade(exam,true);
   if (grade) grades.set(id,grade);
-  render();
+  resultId=id;
+  navigate('results');
   toast(grade?'':'العلامة بانتظار تجهيز مفتاح الامتحان. خلي المدرّس يفتح كشف الأسماء وبعدين جرّب مرة ثانية.');
 }
 function roster() {
@@ -406,13 +450,16 @@ function attempt() {
     `<section class="card"><div class="row"><strong>${num(count)} من ${num(current.order.length)} مُجابة</strong><span class="badge warn">الوقت المتبقي <b id="timer" dir="ltr"></b></span></div>
     <progress aria-label="الأسئلة المجابة" value="${count}" max="${current.order.length}"></progress>
     <div class="palette">${current.order.map((id,index)=>`<button data-action="jump" data-id="${index}" class="${current.review[id]?'review':id in current.answers?'answered':''}" aria-label="السؤال ${num(index+1)}${id in current.answers?'، تمت إجابته':''}${current.review[id]?'، للمراجعة':''}" ${index===position?'aria-current="step"':''}>${num(index+1)}</button>`).join('')}</div>
-    <small class="muted">أخضر = مُجاب · برتقالي = للمراجعة</small></section>
+    <small class="muted">أخضر = مُجاب · بدون لون = غير مُجاب · برتقالي = للمراجعة</small>
+    <p id="attempt-save-status" role="status">${!navigator.onLine?'الاتصال مقطوع. اترك الصفحة مفتوحة حتى يرجع الاتصال.':savingAnswer?'جاري حفظ الإجابة…':pendingAnswer?'في إجابة بانتظار الحفظ.':'الإجابات الظاهرة محفوظة.'}</p>
+    ${pendingAnswer&&!savingAnswer&&navigator.onLine?button('إعادة محاولة الحفظ','retry-answer'):''}</section>
     <section class="card"><fieldset><legend>السؤال ${num(position+1)} · ${num(q.points)} علامة</legend><h2>${esc(q.prompt)}</h2>
     ${q.options.map((choice,index)=>`<label class="choice"><input type="radio" name="answer" value="${index}" ${current.answers[q.id]===index?'checked':''}>${esc(choice)}</label>`).join('')}</fieldset>
     <div class="row"><div class="actions">${position>0?button('السابق','jump',position-1):''}${position+1<current.order.length?button('التالي','jump',position+1,true):''}${button(current.review[q.id]?'إزالة علامة المراجعة':'علّم للمراجعة','review')}</div>${button('تسليم الامتحان','finish')}</div></section>`;
 }
 async function finishAttempt() {
   if (firebasePortal) {
+    if (pendingAnswer) throw new Error('في إجابة بانتظار الحفظ. أعد محاولة الحفظ قبل التسليم.');
     await firebase.submitAttempt(active);
     db.submissions[active].submittedAt=true;
     delete db.attempts[active];
@@ -434,20 +481,66 @@ function tick() {
     render();
     return;
   }
+  const countdown=document.querySelector('#exam-countdown');
+  if (countdown) {
+    const seconds=Math.max(0,Math.ceil((Number(countdown.dataset.start)-Date.now())/1000));
+    const clock=[Math.floor(seconds/3600)%24,Math.floor(seconds/60)%60,seconds%60].map(n=>num(n).padStart(2,'0')).join(':');
+    countdown.textContent=seconds>=86400?num(Math.floor(seconds/86400))+' يوم · '+clock:clock;
+  }
   const timer=document.querySelector('#timer');
   if (!timer || !db?.attempts[active]) return;
   const seconds=Math.max(0,Math.ceil((db.attempts[active].deadline-Date.now())/1000));
   timer.textContent=[Math.floor(seconds/60),seconds%60].map(n=>num(n).padStart(2,'0')).join(':');
   if (!seconds && !busy && Date.now()>=nextExpiryCheck) {
     nextExpiryCheck=Date.now()+5000;
-    perform(finishAttempt);
+    if (!firebasePortal || navigator.onLine) perform(async()=>{
+      if (pendingAnswer) {
+        pendingAnswer=undefined;
+        await finishAttempt();
+        toast('انتهى الوقت. تم تسليم الإجابات المحفوظة.');
+      } else await finishAttempt();
+    });
   }
 }
 function results() {
+  if (firebasePortal) return studentResults();
   const own = db.results.filter(result=>result.student===account.id);
   return hero('لوحة الطالب','نتائج الامتحانات','راجع علامتك والإجابات التي سلّمتها.')+
     (own.length ? own.map(r=>`<section class="card"><div class="row"><h2>${esc(r.title)}</h2><span class="badge ${r.passed?'ok':'warn'}">${r.passed?'ناجح':'لم ينجح'} · <bdi dir="ltr">${num(r.earned)}/${num(r.total)}</bdi> · <bdi dir="ltr">${num(r.percent)}%</bdi></span></div>
     ${table(['السؤال','إجابتك','العلامة'],r.details.map(q=>[esc(q.prompt),esc(q.selected || 'بدون إجابة'),'<bdi dir="ltr">'+num(q.earned)+'/'+num(q.points)+'</bdi>']))}</section>`).join('') : '<p class="card">ما في نتائج بعد. قدّم امتحانًا لتظهر نتيجتك هون.</p>');
+}
+function studentResults() {
+  const history=db.exams.filter(exam=>db.submissions[exam.id]?.submittedAt);
+  if (resultId) {
+    const exam=history.find(item=>item.id===resultId);
+    const grade=grades.get(resultId);
+    if (exam) return hero('نتائجي',esc(exam.title),grade?`العلامة ${num(grade.earned)} من ${num(grade.total)} · ${num(grade.percent)}% · ${grade.passed?'ناجح':'دون علامة النجاح'}`:'العلامة قيد التجهيز.')
+      + `<div class="actions">${button('كل النتائج','all-results')}${button('تحديث التفاصيل','grade',exam.id)}</div>
+      <section class="card">${grade?.details?.length?table(['السؤال','إجابتك','الإجابة الصحيحة','العلامة'],grade.details.map(item=>[
+        esc(item.prompt),esc(item.selected ?? 'بدون إجابة'),esc(item.correct ?? 'غير متاحة'),`<bdi dir="ltr">${num(item.earned)}/${num(item.points)}</bdi>`
+      ])):`<p>${Date.now()<Date.parse(exam.start)+exam.duration*60000?'تفاصيل الإجابات بتظهر بعد انتهاء وقت الامتحان للجميع.':'تفاصيل الإجابات غير متاحة حاليًا.'}</p>`}</section>`;
+  }
+  const marks=history.map(exam=>grades.get(exam.id)).filter(Boolean);
+  const points=marks.map((mark,index)=>[marks.length===1?150:12+276*index/(marks.length-1),110-mark.percent]);
+  return hero('لوحة الطالب','نتائجي','راجع علامات الامتحانات اللي سلّمتها.')
+    + (marks.length?`<section class="card"><h2>تطوّر العلامات</h2><svg class="results-chart" viewBox="0 0 300 120" role="img" aria-label="تطور النسب من الأقدم للأحدث: ${marks.map(mark=>num(mark.percent)+'%').join('، ')}">
+      <path d="M12 10V110H288" fill="none" stroke="var(--line)"/><polyline points="${points.map(point=>point.join(',')).join(' ')}" fill="none" stroke="currentColor" stroke-width="2"/>
+      ${points.map(([x,y])=>`<circle cx="${x}" cy="${y}" r="3" fill="currentColor"/>`).join('')}</svg></section>`:'')
+    + `<section class="card">${history.length?table(['الامتحان','العلامة','النسبة','الحالة','التفاصيل'],history.map(exam=>{
+      const grade=grades.get(exam.id);
+      return [esc(exam.title),grade?`<bdi dir="ltr">${num(grade.earned)}/${num(grade.total)}</bdi>`:'—',
+        grade?`<bdi dir="ltr">${num(grade.percent)}%</bdi>`:'—',grade?(grade.passed?'ناجح':'دون علامة النجاح'):'بانتظار العلامة',button('عرض النتيجة','grade',exam.id)];
+    })):'<div class="student-empty"><h3>ما في نتائج بعد</h3><p>سلّم امتحانًا حتى تظهر علامتك هون.</p></div>'}</section>`;
+}
+function studentProfile() {
+  return hero('لوحة الطالب','ملفي الشخصي','حدّث اسمك أو كلمة المرور.')
+    + `<section class="card"><form id="student-name-form"><label>الاسم<input name="name" required maxlength="100" value="${esc(account.name)}"></label>
+      <p>البريد الجامعي <bdi dir="ltr">${esc(account.email)}</bdi></p><div><button class="primary">حفظ الاسم</button></div></form></section>
+      <section class="card"><h2>تغيير كلمة المرور</h2><form id="student-password-form">
+        <label>كلمة المرور الحالية<input dir="ltr" name="current" type="password" autocomplete="current-password" required></label>
+        <label>كلمة المرور الجديدة<input dir="ltr" name="password" type="password" autocomplete="new-password" required minlength="12"></label>
+        <label>تأكيد كلمة المرور الجديدة<input dir="ltr" name="confirmation" type="password" autocomplete="new-password" required minlength="12"></label>
+        <div><button class="primary">تغيير كلمة المرور</button></div></form></section>`;
 }
 function analytics() {
   const r = db.results;
@@ -502,6 +595,9 @@ document.querySelector('#logout').addEventListener('click',()=>perform(async()=>
   if (firebasePortal) await firebase.logout();
   else await api('logout',{});
   grades.clear();
+  resultId=undefined;
+  examTab='available';
+  pendingAnswer=undefined;
   selectedRoster=undefined;
   editingQuestionId=undefined;
   reschedulingExamId=undefined;
@@ -562,7 +658,13 @@ document.addEventListener('click',event=>{
       });
     }
   }
-  if (action==='page') navigate(id);
+  if (action==='page') {
+    if (id==='results') resultId=undefined;
+    navigate(id);
+  }
+  if (action==='exam-tab' && ['available','upcoming','complete'].includes(id)) {examTab=id;render();view.querySelector('[aria-pressed="true"]')?.focus();}
+  if (action==='all-results') {resultId=undefined;render();}
+  if (action==='retry-answer') perform(flushAnswer);
   if (action==='edit-question' && role==='teacher') {
     editingQuestionId=id;
     render();
@@ -604,6 +706,39 @@ document.addEventListener('click',event=>{
   if (action==='export') download();
   if (action==='toggle') perform(async()=>{update(await api('accounts/toggle',{id}));render();});
 });
+async function flushAnswer() {
+  if (!pendingAnswer || !navigator.onLine) {render();return;}
+  const answer=pendingAnswer;
+  savingAnswer=true;
+  if (page==='attempt') render();
+  try {
+    await firebase.saveAttemptField(answer.id,'answers',answer.question,answer.value);
+    db.attempts[answer.id].answers[answer.question]=answer.value;
+    pendingAnswer=undefined;
+    toast('تم حفظ الإجابة.');
+  } catch (error) {
+    if (error.code==='permission-denied' && Date.now()>=db.attempts[answer.id].deadline) {
+      pendingAnswer=undefined;
+      throw new Error('انتهى الوقت قبل حفظ آخر إجابة. رح تُسلّم الإجابات المحفوظة.');
+    }
+    throw new Error('تعذّر حفظ الإجابة. أعد المحاولة بعد رجوع الاتصال.');
+  } finally {
+    savingAnswer=false;
+    if (page==='attempt') {
+      render();
+      view.querySelector('input[name="answer"]:checked')?.focus();
+    }
+  }
+}
+window.addEventListener('offline',()=>{
+  const status=document.querySelector('#attempt-save-status');
+  if (status) status.textContent='الاتصال مقطوع. اترك الصفحة مفتوحة حتى يرجع الاتصال.';
+});
+window.addEventListener('online',()=>{
+  if (!firebasePortal || role!=='student') return;
+  if (pendingAnswer && !busy) perform(flushAnswer);
+  else if (page==='attempt' && !busy) render();
+});
 document.addEventListener('change',event=>{
   const field=event.target;
   if (field.id==='question-type') {
@@ -625,6 +760,12 @@ document.addEventListener('change',event=>{
   }
   if (field.name==='answer' && page==='attempt') {
     if (busy) {render();return;}
+    if (firebasePortal) {
+      if (pendingAnswer) {render();return;}
+      pendingAnswer={id:active,question:db.attempts[active].order[position],value:Number(field.value)};
+      perform(flushAnswer);
+      return;
+    }
     perform(async()=>{
       const current=db.attempts[active];
       try {
@@ -652,7 +793,24 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=13');
+        firebase ??= await import('./firebase-student.js?v=14');
+        if (event.target.id==='student-name-form' && role==='student') {
+          account.name=await firebase.changeStudentName(values.name);
+          render();
+          toast('تم حفظ الاسم.');
+          return;
+        }
+        if (event.target.id==='student-password-form' && role==='student') {
+          if (values.password!==values.confirmation) throw new Error('تأكيد كلمة المرور غير مطابق.');
+          try {await firebase.changeStudentPassword(values.current,values.password);}
+          catch (error) {
+            if (['auth/invalid-credential','auth/wrong-password'].includes(error.code)) throw new Error('كلمة المرور الحالية غير صحيحة.');
+            throw error;
+          }
+          event.target.reset();
+          toast('تم تغيير كلمة المرور.');
+          return;
+        }
         if (event.target.id==='join-class-form' && role==='student') {
           await firebase.joinClass(values.code,account.name);
           await loadFirebaseAccount(account);
@@ -810,7 +968,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=13');
+    firebase=await import('./firebase-student.js?v=14');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;
