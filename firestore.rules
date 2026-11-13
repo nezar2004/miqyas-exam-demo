@@ -284,6 +284,14 @@ service cloud.firestore {
         && request.resource.data.shuffle is bool;
     }
     match /studentProfiles/{uid}/attempts/{id} {
+      match /tabEvents/{eventId} {
+        allow list: if ownsExam(id);
+        allow create: if student(uid)
+          && duringStudentExam(get(/databases/$(database)/documents/publishedExams/$(id)).data, id, uid)
+          && get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data.submittedAt == null
+          && request.resource.data.keys().hasOnly(['at'])
+          && request.resource.data.at == request.time;
+      }
       function exam() {
         return get(/databases/$(database)/documents/publishedExams/$(id)).data;
       }

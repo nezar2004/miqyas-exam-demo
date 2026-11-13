@@ -5,15 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="firebase-app-check-site-key" content="6LeBnxsuAAAAAFCL7Dqn_tWU3SiTMEsjIKAvKVdS">
 <title>مقياس | منصة الامتحانات</title>
-<link rel="stylesheet" href="style.css?v=19">
-<script src="app.js?v=25" defer></script>
+<link rel="stylesheet" href="style.css?v=20">
+<script src="app.js?v=26" defer></script>
 </head>
 <body class="signed-out">
 <aside class="sidebar">
-  <a class="brand" href="index.html"><span class="logo" aria-hidden="true">▤</span><div>مقياس<small>منصة التقييم الرقمي</small></div></a>
+  <a class="brand" href="index.html"><span class="logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5 19h14M7 15v-3m5 3V8m5 7V5"/></svg></span><div>مقياس<small>منصة التقييم الرقمي</small></div></a>
+  <button id="menu-toggle" type="button" aria-controls="workspace-menu" aria-expanded="false">القائمة</button>
+  <div id="workspace-menu">
   <div class="identity"><strong id="account-name"></strong><small id="account-role"></small></div>
   <nav id="nav" aria-label="القائمة الرئيسية"></nav>
   <button id="logout" type="button">تسجيل الخروج</button>
+  <button type="button" data-theme-toggle aria-pressed="false">الوضع الداكن</button>
+  </div>
   <div class="side-note"><span class="dot"></span> منصة التقييم الرقمي</div>
 </aside>
 <main><header class="top"><div role="navigation" aria-label="مسار الصفحة"><span id="workspace-role"></span> <span aria-hidden="true">/</span> <strong id="section" aria-current="page"></strong></div><button type="button" id="back">رجوع</button></header>

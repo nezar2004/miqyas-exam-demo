@@ -440,6 +440,9 @@ export async function beginAttempt(exam,name) {
 export function saveAttemptField(id,field,question,value) {
   return updateDoc(submissionRef(id),{[field+'.'+question]:value});
 }
+export function recordTabExit(id) {
+  return addDoc(collection(submissionRef(id),'tabEvents'),{at:serverTimestamp()});
+}
 export function submitAttempt(id) {
   const ref=submissionRef(id);
   return runTransaction(db,async transaction=>{
@@ -497,13 +500,15 @@ export async function examRoster(exam,bankQuestions) {
   ]);
   const extra=new Map(extensions.docs.map(item=>[item.id,item.data().minutes]));
   const roster=await Promise.all(entries.docs.map(async entry=>{
-    const snapshot=await getDoc(doc(db,'studentProfiles',entry.id,'attempts',exam.id));
+    const ref=doc(db,'studentProfiles',entry.id,'attempts',exam.id);
+    const [snapshot,tabEvents]=await Promise.all([getDoc(ref),getDocs(collection(ref,'tabEvents'))]);
     const attempt=snapshot.data();
     const minutes=extra.get(entry.id) || 0;
     const closed=Date.now()>=Date.parse(exam.start)+(exam.duration+minutes)*60000;
     const submitted=Boolean(attempt?.submittedAt || (attempt && (closed || attempt.startedAt.toMillis()<Date.parse(exam.start))));
     return {id:entry.id,name:entry.data().name,minutes,submitted,canExtend:!!attempt && !attempt.submittedAt,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null,
-      responses:submitted?attempt.answers:null};
+      responses:submitted?attempt.answers:null,
+      tabExits:tabEvents.size,lastTabExit:Math.max(0,...tabEvents.docs.map(event=>event.data().at.toMillis()))};
   }));
   const prompts=new Map((content.data()?.questions || []).map(question=>[question.id,question.prompt]));
   const submitted=roster.filter(entry=>entry.responses);

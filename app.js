@@ -45,13 +45,23 @@ const paths = {
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 const menus = {
-  student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي', studentProfile:'ملفي الشخصي'},
+  student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي', notifications:'الإشعارات', studentProfile:'ملفي الشخصي'},
   teacher:{exams:'إدارة الامتحانات', classes:'الشُعب', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
   admin:{people:'حسابات المستخدمين', addTeacher:'إضافة حساب', classes:'إدارة الشُعب', subjects:'المواد', log:'سجل النشاط'}
 };
 const view = document.querySelector('#view');
 const nav = document.querySelector('#nav');
 const notice = document.querySelector('#notice');
+const menuToggle=document.querySelector('#menu-toggle');
+let darkMode=false;
+try {darkMode=localStorage.getItem('miqyas-theme')==='dark';} catch {}
+function applyTheme() {
+  document.documentElement.dataset.theme=darkMode?'dark':'light';
+  document.querySelectorAll('[data-theme-toggle]').forEach(control=>control.setAttribute('aria-pressed',String(darkMode)));
+}
+function closeMenu() {menuToggle.setAttribute('aria-expanded','false');}
+menuToggle.addEventListener('click',()=>menuToggle.setAttribute('aria-expanded',String(menuToggle.getAttribute('aria-expanded')!=='true')));
+applyTheme();
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char]);
 const button = (label, action, id = '', primary = false) => `<button type="button" class="${primary ? 'primary' : ''}" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
 const hero = (tag, title, description) => `<section class="hero"><div class="eyebrow">${tag}</div><h1>${title}</h1><p>${description}</p></section>`;
@@ -153,6 +163,7 @@ async function perform(work) {
   finally {busy=false; view.removeAttribute('aria-busy');}
 }
 function navigate(next) {
+  closeMenu();
   if (next!=='bank') editingQuestionId=undefined;
   if (next!=='exams') reschedulingExamId=undefined;
   if (next!==page) previousPages.push(page);
@@ -212,24 +223,38 @@ function render() {
   document.title = portals[role].title+' | مقياس';
   document.querySelector('#account-name').textContent = account.name;
   document.querySelector('#account-role').textContent = roleNames[role];
-  const navIcons = {exams:'grid',classes:'cap',results:'chart',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',subjects:'paper',log:'clock'};
-  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?id!=='analytics':!['addTeacher','classes','studentProfile','subjects'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
+  const navIcons = {exams:'grid',classes:'cap',results:'chart',notifications:'clock',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',subjects:'paper',log:'clock'};
+  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?id!=='analytics':!['addTeacher','classes','studentProfile','subjects','notifications'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#workspace-role').textContent = portals[role].title;
   document.querySelector('#section').textContent = menus[role][page] || (page==='roster'?'الطلاب والنتائج':'تقديم الامتحان');
-  const screens = {exams, classes, results, studentProfile, bank, create, analytics, people, addTeacher, subjects, log, attempt, roster};
+  const screens = {exams, classes, results, notifications, studentProfile, bank, create, analytics, people, addTeacher, subjects, log, attempt, roster};
   view.innerHTML = screens[page]();
   tick();
 }
 function publicHeader() {
-  return `<header class="public-head"><a class="brand" href="index.html"><span class="logo">${icon('grid')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a><span class="public-label">منصة التقييم الرقمي</span></header>`;
+  return `<header class="public-head"><a class="brand" href="index.html"><span class="logo">${icon('chart')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a><button type="button" data-theme-toggle aria-pressed="${darkMode}">الوضع الداكن</button></header>`;
 }
 function illustration() {
   return `<div class="art" aria-hidden="true"><div class="art-orbit"></div><div class="art-sheet"><div class="art-top"><i></i><i></i><i></i></div><div class="art-content"><div class="art-line"></div><div class="art-line short"></div><div class="art-chart"><i></i><i></i><i></i><i></i><i></i></div></div></div><div class="art-check">${icon('shield')}</div></div>`;
 }
 function gateway() {
-  return publicHeader()+`<section class="gateway-hero"><div><span class="kicker">MIQYAS / ASSESSMENT PLATFORM</span><h1>منصة واحدة.<br><em>لكل مرحلة من التقييم.</em></h1><p>أنشئ امتحاناتك، قدّمها، وتابع نتائجها من بوابة مخصصة لكل دور.</p></div>${illustration()}</section>
-    <section class="portal-section"><div class="row"><h2>اختر بوابتك</h2><span class="muted">${num(Object.keys(portals).length)} مساحات عمل</span></div><div class="portal-grid">${Object.entries(portals).map(([id,item])=>`<a class="portal-card" href="?portal=${id}"><span class="row"><span class="portal-icon ${id}">${icon(item.icon)}</span><small dir="ltr">${item.code}</small></span><h3>${item.title}</h3><p>${item.detail}</p><span class="portal-link">الانتقال إلى البوابة ${icon('arrow')}</span></a>`).join('')}</div></section>
-    <footer class="public-footer"><span>مقياس · منصة التقييم الرقمي</span><span>منصة الامتحانات</span></footer>`;
+  return publicHeader()+`<section class="gateway-hero"><div><h1>منصة مقياس للامتحانات</h1><p>أنشئ امتحاناتك، قدّمها، وتابع نتائجها من بوابة مخصصة لكل دور.</p><a class="gateway-signin" href="#portals">تسجيل الدخول</a></div>${illustration()}</section>
+    <section id="portals" class="portal-section"><h2>اختر بوابتك</h2><div class="portal-grid">${Object.entries(portals).map(([id,item])=>`<a class="portal-card" href="?portal=${id}"><span class="portal-icon ${id}">${icon(item.icon)}</span><h3>${item.title}</h3><p>${item.detail}</p><span class="portal-link">تسجيل الدخول ${icon('arrow')}</span></a>`).join('')}</div></section>`;
+}
+function notifications() {
+  const now=Date.now();
+  const items=db.exams.flatMap(exam=>{
+    const grade=grades.get(exam.id);
+    if (grade) return [{exam,label:'النتيجة جاهزة',action:'grade',date:db.submissions[exam.id]?.submittedAt?.toMillis?.() || Date.parse(exam.start)}];
+    const start=Date.parse(exam.start);
+    return exam.ready && !db.submissions[exam.id]?.submittedAt && start+(exam.duration+(exam.extra || 0))*60000>now
+      ?[{exam,label:'امتحان منشور',action:'notification-exam',date:exam.publishedAt?.toMillis?.() || start}]:[];
+  }).sort((a,b)=>b.date-a.date);
+  return hero('لوحة الطالب','الإشعارات','تابع الامتحانات المنشورة والنتائج الجاهزة.')
+    + `<div class="actions">${button('تحديث الإشعارات','refresh-exams')}</div>`
+    + (items.length?items.map(({exam,label,action,date})=>`<section class="card"><span class="badge">${label}</span>
+      <h2>${esc(exam.title)}</h2><p class="muted"><bdi>${fmt(date)}</bdi></p>
+      ${button(action==='grade'?'عرض النتيجة':'عرض الامتحانات',action,exam.id)}</section>`).join(''):'<section class="card student-empty"><h3>ما في إشعارات حاليًا</h3></section>');
 }
 function fields(includeName) {
   return `${includeName?'<label>الاسم الكامل<input name="name" maxlength="100" autocomplete="name" required></label>':''}
@@ -385,9 +410,10 @@ function roster() {
       ${metric('المتوسط',average)}${metric('أعلى نسبة',marks.length?percent(Math.max(...marks)):'—')}
       ${metric('أدنى نسبة',marks.length?percent(Math.min(...marks)):'—')}${metric('نسبة النجاح',pass)}</div>
     <section class="card"><div class="row"><h2>الطلاب والعلامات</h2><div class="actions">${button('تحديث النتائج','roster',exam.id)}${entries.length?button('تصدير CSV','roster-export'):''}</div></div>
-    ${entries.length?table(['اسم الطالب','الحالة','العلامة','وقت إضافي'],entries.map(entry=>[
+    ${entries.length?table(['اسم الطالب','الحالة','العلامة','مغادرة التبويب','وقت إضافي'],entries.map(entry=>[
       esc(entry.name),entry.submitted?'انتهت المحاولة':'بدأ الامتحان',
       entry.grade?`<bdi dir="ltr">${num(entry.grade.earned)} / ${num(entry.grade.total)}</bdi> · <bdi dir="ltr">${num(entry.grade.percent)}%</bdi>`:'—',
+      entry.tabExits?`${num(entry.tabExits)}<br><small>آخر مغادرة <bdi>${fmt(entry.lastTabExit)}</bdi></small>`:'0',
       entry.canExtend?`<form class="extension-form" data-id="${esc(entry.id)}"><label>دقائق إضافية<input name="minutes" type="number" min="1" max="120" value="${entry.minutes || 5}" required></label><button>حفظ</button></form>`:entry.minutes?num(entry.minutes)+' دقيقة':'—'
     ])):'<p>لسه ما في محاولات مسجّلة لهالامتحان.</p>'}</section>
     ${marks.length?`<section class="card"><h2>توزيع العلامات</h2>${table(['النسبة','عدد الطلاب'],buckets.map(([label,inRange])=>[
@@ -701,6 +727,12 @@ document.querySelector('#back').addEventListener('click',()=>{
   render();
 });
 document.addEventListener('click',event=>{
+  if (event.target.closest('[data-theme-toggle]')) {
+    darkMode=!darkMode;
+    try {localStorage.setItem('miqyas-theme',darkMode?'dark':'light');} catch {}
+    applyTheme();
+    return;
+  }
   const target=event.target.closest('button[data-action]');
   if (firebasePortal && target?.dataset.action==='student-logout') {
     perform(async()=>{await firebase.logout();account=undefined;toast('');render();});
@@ -749,6 +781,11 @@ document.addEventListener('click',event=>{
   }
   if (action==='exam-tab' && ['available','upcoming','complete'].includes(id)) {examTab=id;render();view.querySelector('[aria-pressed="true"]')?.focus();}
   if (action==='all-results') {resultId=undefined;render();}
+  if (action==='notification-exam') {
+    const exam=db.exams.find(item=>item.id===id);
+    examTab=exam && Date.parse(exam.start)>Date.now()?'upcoming':'available';
+    navigate('exams');
+  }
   if (action==='retry-answer') perform(flushAnswer);
   if (action==='edit-question' && role==='teacher') {
     editingQuestionId=id;
@@ -846,6 +883,17 @@ async function flushAnswer() {
     }
   }
 }
+document.addEventListener('visibilitychange',()=>{
+  if (!firebasePortal || role!=='student' || page!=='attempt' || !document.hidden) return;
+  const attempt=db?.attempts[active];
+  if (attempt && Date.now()<attempt.deadline) firebase.recordTabExit(active).catch(()=>{});
+});
+document.addEventListener('keydown',event=>{
+  if (event.key==='Escape' && menuToggle.getAttribute('aria-expanded')==='true') {
+    closeMenu();
+    menuToggle.focus();
+  }
+});
 window.addEventListener('offline',()=>{
   const status=document.querySelector('#attempt-save-status');
   if (status) status.textContent='الاتصال مقطوع. اترك الصفحة مفتوحة حتى يرجع الاتصال.';
@@ -909,7 +957,7 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=16');
+        firebase ??= await import('./firebase-student.js?v=17');
         const formId=event.target.dataset.id;
         if (event.target.classList.contains('exam-settings') && role==='teacher') {
           await firebase.editExam(db.exams.find(exam=>exam.id===formId),{title:values.title.trim(),duration:Number(values.duration),pass:Number(values.pass)});
@@ -1135,7 +1183,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=16');
+    firebase=await import('./firebase-student.js?v=17');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

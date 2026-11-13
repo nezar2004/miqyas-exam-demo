@@ -165,3 +165,25 @@ th{background:#f1f6f2}
 .signed-out #notice{max-width:1000px;margin-inline:auto;color:#843628}
 @media(max-width:700px){.sidebar{padding:15px 16px}.sidebar .brand{margin:0}.identity{padding:7px 10px}.gateway-hero,.login-layout{grid-template-columns:1fr}.gateway-hero .art,.login-story{display:none}.gateway-hero{min-height:270px}.portal-grid{grid-template-columns:1fr}.portal-card{min-height:unset}.public-head{margin-bottom:8px}.top{padding:8px 11px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
+
+#workspace-menu{display:grid;gap:10px}
+.sidebar #menu-toggle{display:none}
+.gateway-signin{display:inline-flex;align-items:center;min-height:44px;margin-top:14px;padding:8px 18px;border-radius:9px;background:#bcebc7;color:#122e27;font-weight:bold}
+:is(a,button,summary,input,select,textarea):focus-visible{outline:3px solid var(--focus,#168264);outline-offset:3px}
+:root[data-theme="dark"]{color-scheme:dark;--ink:#edf7f0;--muted:#bccdc3;--line:#40564d;--blue:#a2e4c3;--pale:#28463a;--green:#a2e4c3;--paper:#121e19;--forest:#152f26;--surface:#1d3028;--focus:#bcebc7}
+[data-theme="dark"] :is(.sidebar,.top,.card,.portal-card,.login-layout,.identity,button,input,select,textarea,th){background:var(--surface);border-color:var(--line)}
+[data-theme="dark"] :is(.sidebar button:hover,.portal-card:hover,.answer-option:has(input:checked),.sidebar button[aria-current="page"]){background:var(--pale);color:var(--ink)}
+[data-theme="dark"] .badge{color:#bcebc7}
+[data-theme="dark"] :is(.warn,.palette .review){background:#533b22;color:#ffe2aa}
+[data-theme="dark"] :is(.ok,.palette .answered){background:#28463a;color:#bcebc7}
+[data-theme="dark"] .primary{background:#a2e4c3;color:#122e27;border-color:#a2e4c3}
+[data-theme="dark"] .correct-option input:checked{background:#16714a}
+[data-theme="dark"] .signed-out #notice{color:#ffb9a9}
+@media(max-width:700px){
+  .sidebar{display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px}
+  .sidebar #menu-toggle{display:block;width:auto;border-color:var(--line)}
+  #workspace-menu{grid-column:1/-1}
+  #menu-toggle[aria-expanded="false"] + #workspace-menu{display:none}
+  .sidebar nav{display:grid}
+  .sidebar nav button{width:100%!important}
+}
