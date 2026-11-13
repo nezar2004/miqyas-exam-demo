@@ -331,6 +331,11 @@ export async function enableExam(id,start,bankQuestions) {
 export function rescheduleExam(id,start) {
   return updateDoc(doc(db,'publishedExams',id),{start:Timestamp.fromDate(start)});
 }
+export async function examDraft(exam) {
+  const paper=await getDoc(doc(db,'teacherBanks',auth.currentUser.uid,'papers',exam.id));
+  if (!paper.exists()) throw new Error('تعذّر العثور على أسئلة الامتحان.');
+  return {...exam,...paper.data()};
+}
 
 function submissionRef(id) {
   return doc(db,'studentProfiles',auth.currentUser.uid,'attempts',id);
@@ -424,12 +429,23 @@ export async function examRoster(exam,bankQuestions) {
       else answers=existing.data().answers;
     });
   }
-  const entries=await getDocs(collection(db,'publishedExams',exam.id,'participants'));
+  const [entries,content]=await Promise.all([
+    getDocs(collection(db,'publishedExams',exam.id,'participants')),
+    getDoc(doc(db,'examContent',exam.id))
+  ]);
   const closed=Date.now()>=Date.parse(exam.start)+exam.duration*60000;
-  return Promise.all(entries.docs.map(async entry=>{
+  const roster=await Promise.all(entries.docs.map(async entry=>{
     const snapshot=await getDoc(doc(db,'studentProfiles',entry.id,'attempts',exam.id));
     const attempt=snapshot.data();
     const submitted=Boolean(attempt?.submittedAt || (attempt && (closed || attempt.startedAt.toMillis()<Date.parse(exam.start))));
-    return {name:entry.data().name,submitted,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null};
+    return {name:entry.data().name,submitted,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null,
+      responses:submitted?attempt.answers:null};
   }));
+  const prompts=new Map((content.data()?.questions || []).map(question=>[question.id,question.prompt]));
+  const submitted=roster.filter(entry=>entry.responses);
+  return {entries:roster,questions:Object.entries(answers).map(([id,key],index)=>({
+    prompt:prompts.get(id) || 'السؤال '+(index+1),
+    correct:submitted.filter(entry=>entry.responses[id]===key.correct).length,
+    total:submitted.length
+  }))};
 }

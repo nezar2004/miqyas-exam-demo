@@ -18,6 +18,10 @@ let reschedulingExamId;
 const grades=new Map();
 let examTab='available';
 let resultId;
+let directoryPage=0;
+let directoryFilter={search:'',role:'all'};
+let bankSearch='';
+let copiedExam;
 let savingAnswer=false;
 let pendingAnswer;
 const roleNames = {student:'طالب', teacher:'مدرّس', admin:'مدير النظام'};
@@ -82,9 +86,9 @@ function examClassLabels(exam) {
   const classes=(exam.classIds || []).map(id=>db.classes.find(group=>group.id===id)).filter(Boolean);
   return classes.length?classes.map(group=>`<span class="badge">${classTitle(group)}</span>`).join(' '):`<span class="badge">${esc(exam.section)}</span>`;
 }
-function classChoices() {
+function classChoices(selected=[]) {
   return `<fieldset><legend>الشُعب المستهدفة (من شعبة إلى 3)</legend>${db.classes.map(group=>
-    `<label class="choice"><input type="checkbox" name="classIds" value="${esc(group.id)}"><span>${classTitle(group)}</span></label>`
+    `<label class="choice"><input type="checkbox" name="classIds" value="${esc(group.id)}" ${selected.includes(group.id)?'checked':''}><span>${classTitle(group)}</span></label>`
   ).join('')}</fieldset>`;
 }
 function selectedClasses(form) {
@@ -207,7 +211,7 @@ function render() {
   const navIcons = {exams:'grid',classes:'cap',results:'chart',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
   nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['analytics','log'].includes(id):!['addTeacher','classes','studentProfile'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#workspace-role').textContent = portals[role].title;
-  document.querySelector('#section').textContent = menus[role][page] || (page==='roster'?'كشف الأسماء':'تقديم الامتحان');
+  document.querySelector('#section').textContent = menus[role][page] || (page==='roster'?'الطلاب والنتائج':'تقديم الامتحان');
   const screens = {exams, classes, results, studentProfile, bank, create, analytics, people, addTeacher, log, attempt, roster};
   view.innerHTML = screens[page]();
   tick();
@@ -321,7 +325,7 @@ function teacherExamActions(exam) {
     button('أنشئ شعبة لربط الامتحان','page','classes');
   const start=Date.parse(exam.start);
   const isRunning=Date.now()>=start && Date.now()<start+exam.duration*60000;
-  const actions=exam.ready?`<div class="actions">${button('كشف الأسماء','roster',exam.id)}
+  const actions=exam.ready?`<div class="actions">${button('الطلاب والنتائج','roster',exam.id)}${button('نسخ الامتحان','copy-exam',exam.id)}
     ${isRunning?'':button('تغيير الموعد','reschedule-exam',exam.id)}</div>`:'';
   if (exam.ready && reschedulingExamId!==exam.id) return actions;
   return actions+`<form class="${exam.ready?'reschedule-exam-form':'enable-exam-form'}" data-id="${esc(exam.id)}">
@@ -360,15 +364,29 @@ async function showGrade(id) {
   toast(grade?'':'العلامة بانتظار تجهيز مفتاح الامتحان. خلي المدرّس يفتح كشف الأسماء وبعدين جرّب مرة ثانية.');
 }
 function roster() {
-  const {exam,entries}=selectedRoster;
+  const {exam,entries,questions}=selectedRoster;
   const graded=entries.filter(entry=>entry.grade);
-  return hero('لوحة المدرّس','كشف الأسماء',esc(exam.title))+
-    `<div class="grid">${metric('بدأوا الامتحان',entries.length)}${metric('المحاولات المصحّحة',graded.length)}</div>
-    <section class="card"><div class="row"><h2>الطلاب والعلامات</h2>${button('تحديث الكشف','roster',exam.id)}</div>
+  const marks=graded.map(entry=>entry.grade.percent);
+  const percent=value=>num(Math.round(value*100)/100)+'%';
+  const average=marks.length?percent(marks.reduce((sum,mark)=>sum+mark,0)/marks.length):'—';
+  const pass=marks.length?percent(graded.filter(entry=>entry.grade.passed).length*100/marks.length):'—';
+  const buckets=[['أقل من 50%',mark=>mark<50],['50% إلى أقل من 75%',mark=>mark>=50 && mark<75],['75% فأعلى',mark=>mark>=75]];
+  return hero('لوحة المدرّس','الطلاب والنتائج',esc(exam.title))+
+    `<div class="grid">${metric('بدأوا الامتحان',entries.length)}${metric('المحاولات المصحّحة',graded.length)}
+      ${metric('المتوسط',average)}${metric('أعلى نسبة',marks.length?percent(Math.max(...marks)):'—')}
+      ${metric('أدنى نسبة',marks.length?percent(Math.min(...marks)):'—')}${metric('نسبة النجاح',pass)}</div>
+    <section class="card"><div class="row"><h2>الطلاب والعلامات</h2><div class="actions">${button('تحديث النتائج','roster',exam.id)}${entries.length?button('تصدير CSV','roster-export'):''}</div></div>
     ${entries.length?table(['اسم الطالب','الحالة','العلامة'],entries.map(entry=>[
       esc(entry.name),entry.submitted?'انتهت المحاولة':'بدأ الامتحان',
       entry.grade?`<bdi dir="ltr">${num(entry.grade.earned)} / ${num(entry.grade.total)}</bdi> · <bdi dir="ltr">${num(entry.grade.percent)}%</bdi>`:'—'
-    ])):'<p>لسه ما في محاولات مسجّلة بكشف هالامتحان.</p>'}</section>`;
+    ])):'<p>لسه ما في محاولات مسجّلة لهالامتحان.</p>'}</section>
+    ${marks.length?`<section class="card"><h2>توزيع العلامات</h2>${table(['النسبة','عدد الطلاب'],buckets.map(([label,inRange])=>[
+      `<bdi>${label}</bdi>`,num(marks.filter(inRange).length)
+    ]))}</section><section class="card"><h2>تحليل الأسئلة</h2>${table(['السؤال','أجابوا صح','النسبة','ملاحظة'],questions.map(question=>[
+      esc(question.prompt),num(question.correct)+' / '+num(question.total),
+      question.total?percent(question.correct*100/question.total):'—',
+      question.total>=5 && question.correct/question.total<=0.25?'صعب جدًا · يستحق المراجعة':'—'
+    ]))}</section>`:''}`;
 }
 function answerOption(index, fixedAnswer, count, existing) {
   const number=index+1;
@@ -407,22 +425,23 @@ function bank() {
     ${['صح','خطأ'].map((answer,index)=>answerOption(index,answer,2,boolean?existing:null)).join('')}</fieldset>
     <label>العلامة<input name="points" type="number" min="1" max="100" value="${existing?.points ?? 1}" required></label>
     <div class="actions"><button class="primary">${existing?'حفظ التعديل':'حفظ السؤال'}</button>${existing?button('إلغاء التعديل','cancel-question-edit'):''}</div></form></section>
-    <section class="card"><h2>الأسئلة المحفوظة</h2>${table(
+    <section class="card"><h2>الأسئلة المحفوظة</h2>${firebasePortal?`<form id="bank-search"><label>البحث في الأسئلة<input name="search" type="search" value="${esc(bankSearch)}"></label><div><button>بحث</button></div></form>`:''}${table(
       ['السؤال','الإجابة الصحيحة','العلامة',...(firebasePortal?['الإجراء']:[])],
-      db.questions.map(q=>[esc(q.prompt),esc(q.options[q.correct]),num(q.points),...(firebasePortal?[button('تعديل','edit-question',q.id)]:[])])
+      db.questions.filter(q=>[q.prompt,...q.options].some(value=>value.toLowerCase().includes(bankSearch))).map(q=>[esc(q.prompt),esc(q.options[q.correct]),num(q.points),...(firebasePortal?[button('تعديل','edit-question',q.id)]:[])])
     )}</section>`;
 }
 function create() {
+  const draft=firebasePortal?copiedExam:undefined;
   if (firebasePortal && !db.classes.length) return hero('أدوات المدرّس','إنشاء امتحان','أنشئ شعبة حتى تقدر تحدد مين يقدّم الامتحان.')+`<div class="card">${button('الانتقال إلى الشُعب','page','classes',true)}</div>`;
   if (firebasePortal && !db.questions.length) return hero('أدوات المدرّس','إنشاء امتحان','أضف سؤالًا واحدًا على الأقل لبنك الأسئلة حتى تقدر تنشر امتحان.')+`<div class="card">${button('الانتقال إلى بنك الأسئلة','page','bank',true)}</div>`;
   return hero('أدوات المدرّس','إنشاء امتحان','حدّد قواعد الامتحان واختر الأسئلة من البنك.') +
-    `<section class="card"><form id="exam-form"><label>اسم الامتحان<input name="title" required minlength="3" maxlength="100"></label>
-    ${firebasePortal?classChoices():''}
-    <div class="grid"><label>المدة بالدقائق<input type="number" name="duration" value="5" min="1" max="180" required></label>
-    <label>علامة النجاح (%)<input type="number" name="pass" value="60" min="0" max="100" required></label>
+    `<section class="card"><form id="exam-form"><label>اسم الامتحان<input name="title" required minlength="3" maxlength="100" value="${esc(draft?.title)}"></label>
+    ${firebasePortal?classChoices(draft?.classIds):''}
+    <div class="grid"><label>المدة بالدقائق<input type="number" name="duration" value="${draft?.duration ?? 5}" min="1" max="180" required></label>
+    <label>علامة النجاح (%)<input type="number" name="pass" value="${draft?.pass ?? 60}" min="0" max="100" required></label>
     <label>وقت البداية${firebasePortal?'':' (اختياري)'}<input type="datetime-local" name="start" ${firebasePortal?'required':''}></label></div>
-    <label class="choice"><input type="checkbox" name="shuffle"> ترتيب الأسئلة عشوائيًا لكل محاولة</label>
-    <fieldset><legend>أسئلة الامتحان</legend>${db.questions.map(q=>`<label class="choice"><input type="checkbox" name="questions" value="${esc(q.id)}">${esc(q.prompt)} · ${num(q.points)} علامة</label>`).join('')}</fieldset>
+    <label class="choice"><input type="checkbox" name="shuffle" ${draft?.shuffle?'checked':''}> ترتيب الأسئلة عشوائيًا لكل محاولة</label>
+    <fieldset><legend>أسئلة الامتحان</legend>${db.questions.map(q=>`<label class="choice"><input type="checkbox" name="questions" value="${esc(q.id)}" ${draft?.ids.includes(q.id)?'checked':''}>${esc(q.prompt)} · ${num(q.points)} علامة</label>`).join('')}</fieldset>
     <div><button class="primary">${firebasePortal?'نشر الامتحان':'حفظ الامتحان'}</button></div></form></section>`;
 }
 async function start(id) {
@@ -556,15 +575,28 @@ function analytics() {
 }
 function people() {
   if (firebasePortal) {
-    const directory=(title,entries,manage=false)=>`<section class="card"><h2>${title}</h2>
-      ${entries.length?table(manage?['الاسم','البريد','الإجراء']:['الاسم','البريد'],entries.map(person=>[
-        esc(person.name || '—'),esc(person.email || '—'),
-        ...(manage?[button('إلغاء صلاحية المدرّس','remove-teacher',person.id)]:[])
-      ]),1):'<p class="muted">ما في حسابات بهالقائمة حاليًا.</p>'}</section>`;
+    const roles={students:'طالب',teachers:'مدرّس',admins:'مدير'};
+    const filtered=Object.entries(roles).filter(([key])=>directoryFilter.role==='all' || directoryFilter.role===key)
+      .flatMap(([key,label])=>db[key].map(person=>({...person,label,teacher:key==='teachers'})))
+      .filter(person=>[person.name,person.email].some(value=>value?.toLowerCase().includes(directoryFilter.search)));
+    const lastPage=Math.max(0,Math.ceil(filtered.length/15)-1);
+    directoryPage=Math.min(directoryPage,lastPage);
+    const visible=filtered.slice(directoryPage*15,directoryPage*15+15);
     return hero('لوحة الإدارة','الحسابات والصلاحيات','راجع الطلاب والمدرّسين والمديرين وأدر صلاحية التدريس.')+
       `<div class="grid">${metric('الطلاب',db.students.length)}${metric('المدرّسون',db.teachers.length)}${metric('المديرون',db.admins.length)}</div>
       <div class="actions">${button('إضافة مدرّس','page','addTeacher',true)}${button('تحديث القوائم','refresh-exams')}</div>
-      <br>${directory('المدرّسون',db.teachers,true)}${directory('الطلاب',db.students)}${directory('المديرون',db.admins)}`;
+      <section class="card"><form id="directory-filter"><div class="grid">
+        <label>الاسم أو البريد<input name="search" type="search" value="${esc(directoryFilter.search)}"></label>
+        <label>الدور<select name="role"><option value="all">كل الأدوار</option>${Object.entries(roles).map(([key,label])=>
+          `<option value="${key}" ${directoryFilter.role===key?'selected':''}>${label}</option>`).join('')}</select></label>
+      </div><div><button>تطبيق الفلتر</button></div></form>
+      ${visible.length?table(['الاسم','البريد','الدور','الإجراء'],visible.map(person=>[
+        esc(person.name || '—'),esc(person.email || '—'),person.label,
+        person.teacher?button('إلغاء صلاحية المدرّس','remove-teacher',person.id):'—'
+      ]),1):'<p>ما في حسابات مطابقة للبحث.</p>'}
+      ${lastPage?`<div class="actions">${directoryPage>0?button('السابق','directory-page',directoryPage-1):''}
+        <span>صفحة ${num(directoryPage+1)} من ${num(lastPage+1)}</span>
+        ${directoryPage<lastPage?button('التالي','directory-page',directoryPage+1):''}</div>`:''}</section>`;
   }
   return hero('لوحة الإدارة','حسابات المستخدمين','أضف المدرّسين وأدر حالة الحسابات.')+
     `<section class="card"><h2>إضافة مدرّس</h2><form id="teacher-form">${fields(true)}<div><button class="primary">حفظ حساب المدرّس</button></div></form></section>
@@ -580,12 +612,11 @@ function log() {
   return hero('لوحة الإدارة','سجل النشاط','راجع عمليات الدخول وتغييرات الحسابات والامتحانات.')+
     `<section class="card">${db.log.length?table(['الحدث','الوقت'],db.log.map(item=>[esc(item.label),fmt(item.at)])):'<p>لا توجد أحداث بعد.</p>'}</section>`;
 }
-function download() {
+function download(rows = [['الطالب','الامتحان','النسبة','النتيجة','وقت التسليم'],...db.results.map(r=>[studentName(r),r.title,r.percent,r.passed?'ناجح':'لم ينجح',new Date(r.at).toISOString()])]) {
   const cell = value => {
     const str = String(value);
     return '"'+(/^[=+\-@\t\r\n]/.test(str.trimStart())?"'":"")+str.replaceAll('"','""')+'"';
   };
-  const rows = [['الطالب','الامتحان','النسبة','النتيجة','وقت التسليم'],...db.results.map(r=>[studentName(r),r.title,r.percent,r.passed?'ناجح':'لم ينجح',new Date(r.at).toISOString()])];
   const url = URL.createObjectURL(new Blob(['\ufeff',rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
   const link = Object.assign(document.createElement('a'),{href:url,download:'exam-results.csv'});
   link.click();
@@ -599,6 +630,10 @@ document.querySelector('#logout').addEventListener('click',()=>perform(async()=>
   examTab='available';
   pendingAnswer=undefined;
   selectedRoster=undefined;
+  copiedExam=undefined;
+  directoryFilter={search:'',role:'all'};
+  directoryPage=0;
+  bankSearch='';
   editingQuestionId=undefined;
   reschedulingExamId=undefined;
   account=undefined;
@@ -659,6 +694,7 @@ document.addEventListener('click',event=>{
     }
   }
   if (action==='page') {
+    if (id==='create') copiedExam=undefined;
     if (id==='results') resultId=undefined;
     navigate(id);
   }
@@ -684,11 +720,23 @@ document.addEventListener('click',event=>{
     render();
   }
   if (action==='grade' && role==='student') perform(()=>showGrade(id));
+  if (action==='copy-exam' && role==='teacher') perform(async()=>{
+    const exam=db.exams.find(item=>item.id===id);
+    copiedExam=await firebase.examDraft(exam);
+    navigate('create');
+    toast('تم تعبئة بيانات النسخة. حدّد موعدها قبل النشر.');
+  });
   if (action==='roster' && role==='teacher') perform(async()=>{
     const exam=db.exams.find(item=>item.id===id);
-    selectedRoster={exam,entries:await firebase.examRoster(exam,db.questions)};
+    selectedRoster={exam,...await firebase.examRoster(exam,db.questions)};
     navigate('roster');
   });
+  if (action==='roster-export' && role==='teacher' && selectedRoster) {
+    download([['الطالب','الامتحان','العلامة','العلامة الكلية','النسبة','الحالة'],
+      ...selectedRoster.entries.map(({name,grade})=>[name,selectedRoster.exam.title,grade?.earned ?? '',
+        grade?.total ?? '',grade?.percent ?? '',grade?(grade.passed?'ناجح':'دون علامة النجاح'):'بانتظار التصحيح'])]);
+  }
+  if (action==='directory-page' && role==='admin') {directoryPage=Number(id);render();}
   if (action==='start') perform(()=>start(id));
   if (action==='jump') {position=Number(id);render();}
   if (action==='review') perform(async()=>{
@@ -793,7 +841,18 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=14');
+        firebase ??= await import('./firebase-student.js?v=15');
+        if (event.target.id==='directory-filter' && role==='admin') {
+          directoryFilter={search:values.search.trim().toLowerCase(),role:values.role};
+          directoryPage=0;
+          render();
+          return;
+        }
+        if (event.target.id==='bank-search' && role==='teacher') {
+          bankSearch=values.search.trim().toLowerCase();
+          render();
+          return;
+        }
         if (event.target.id==='student-name-form' && role==='student') {
           account.name=await firebase.changeStudentName(values.name);
           render();
@@ -902,6 +961,7 @@ document.addEventListener('submit',event=>{
           if (title.length<3) throw new Error('اسم الامتحان لازم يكون 3 أحرف على الأقل.');
           if (!ids.length || ids.length>100) throw new Error('اختر من سؤال واحد إلى 100 سؤال.');
           await firebase.publishExam({title,section,classIds,ids,start:new Date(values.start).toISOString(),duration:Number(values.duration),pass:Number(values.pass),shuffle:form.has('shuffle')},db.questions);
+          copiedExam=undefined;
           await loadFirebaseAccount(account);
           navigate('exams');
           toast('تم نشر الامتحان.');
@@ -968,7 +1028,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=14');
+    firebase=await import('./firebase-student.js?v=15');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;
