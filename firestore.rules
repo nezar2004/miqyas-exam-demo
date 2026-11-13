@@ -34,13 +34,23 @@ service cloud.firestore {
           || admin() && exists(/databases/$(database)/documents/teacherRoles/$(request.resource.data.owner)));
       allow update: if managesClass(id) && validClass(request.resource.data)
         && request.resource.data.owner == resource.data.owner;
+      match /invites/{code} {
+        allow list: if managesClass(id);
+        allow create: if (admin() || (teacher()
+          && getAfter(/databases/$(database)/documents/classes/$(id)).data.owner == request.auth.uid))
+          && request.resource.data.keys().size() == 0
+          && code.matches('^[A-Za-z0-9]{20}$');
+      }
       match /members/{uid} {
         allow list: if managesClass(id);
         allow get: if managesClass(id) || student(uid);
         allow create: if student(uid)
           && exists(/databases/$(database)/documents/classes/$(id))
-          && request.resource.data.keys().hasOnly(['name'])
+          && request.resource.data.keys().hasOnly(['name', 'code'])
           && request.resource.data.name == get(/databases/$(database)/documents/studentProfiles/$(uid)).data.name
+          && request.resource.data.code is string
+          && request.resource.data.code.matches('^[A-Za-z0-9]{20}$')
+          && exists(/databases/$(database)/documents/classes/$(id)/invites/$(request.resource.data.code))
           && existsAfter(/databases/$(database)/documents/studentProfiles/$(uid)/classes/$(id));
       }
       match /exams/{examId} {

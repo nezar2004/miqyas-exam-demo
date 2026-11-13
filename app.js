@@ -85,12 +85,12 @@ function classes() {
   const teacherOptions=role==='admin'?`<label>المدرّس<select name="owner" required><option value="">اختر المدرّس</option>${db.teachers.map(teacher=>
     `<option value="${esc(teacher.id)}">${esc(teacher.name)}</option>`).join('')}</select></label>`:'';
   return hero('الشُعب الدراسية',student?'شُعبي':'إدارة الشُعب',student?'أدخل الرمز اللي أعطاك إياه المدرّس لتظهر امتحانات الشعبة.':'أنشئ شعبة وشارك رمز الانضمام مع طلابها.')
-    + (student?`<section class="card"><form id="join-class-form"><label>رمز الانضمام<input name="code" dir="ltr" required maxlength="20" autocomplete="off" spellcheck="false"></label>
+    + (student?`<section class="card"><form id="join-class-form"><label>رمز الانضمام<input name="code" dir="ltr" required maxlength="41" autocomplete="off" spellcheck="false"></label>
       <div><button class="primary">انضم للشعبة</button></div></form></section>`:
       `<section class="card"><h2>إضافة شعبة</h2><form class="class-form">${classFields()}${teacherOptions}<div><button class="primary">إنشاء شعبة</button></div></form></section>`)
     + (db.classes.length?db.classes.map(group=>`<section class="card"><h2>${esc(group.name)}</h2><p>${esc(group.subject)}</p>
       ${role==='admin'?`<p>المدرّس: ${esc(db.teachers.find(teacher=>teacher.id===group.owner)?.name || 'حساب غير متاح')}</p>`:''}
-      ${student?'':`<p>رمز الانضمام <code dir="ltr">${esc(group.id)}</code></p>
+      ${student?'':`${group.invite?`<p>رمز الانضمام <code dir="ltr" style="overflow-wrap:anywhere">${esc(group.id+'-'+group.invite)}</code></p>`:button('إنشاء رمز انضمام','class-invite',group.id)}
       <details><summary>الطلاب المسجّلون (${num(group.members.length)})</summary>${group.members.length?
         `<ul>${group.members.map(name=>`<li>${esc(name)}</li>`).join('')}</ul>`:'<p>لسه ما انضم أي طالب.</p>'}</details>
       <details><summary>تعديل الشعبة</summary><form class="class-form" data-id="${esc(group.id)}">${classFields(group)}
@@ -527,6 +527,12 @@ document.addEventListener('click',event=>{
   const {action,id}=target.dataset;
   toast('');
   if (action==='refresh-exams') perform(async()=>{await loadFirebaseAccount(account);render();});
+  if (action==='class-invite' && firebasePortal && ['teacher','admin'].includes(role)) perform(async()=>{
+    await firebase.createClassInvite(id);
+    await loadFirebaseAccount(account);
+    render();
+    toast('تم إنشاء رمز الانضمام.');
+  });
   if (action==='remove-teacher' && firebasePortal && role==='admin') {
     const person=db.teachers.find(item=>item.id===id);
     if (person && confirm('إلغاء صلاحية المدرّس عن '+person.name+'؟')) {
@@ -628,7 +634,7 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=12');
+        firebase ??= await import('./firebase-student.js?v=13');
         if (event.target.id==='join-class-form' && role==='student') {
           await firebase.joinClass(values.code,account.name);
           await loadFirebaseAccount(account);
@@ -779,7 +785,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=12');
+    firebase=await import('./firebase-student.js?v=13');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

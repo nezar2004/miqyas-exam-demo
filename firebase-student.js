@@ -186,8 +186,8 @@ async function loadClasses(portal) {
   }
   const snapshots=await getDocs(portal==='teacher'?query(classes,where('owner','==',uid)):classes);
   return Promise.all(snapshots.docs.map(async item=>{
-    const members=await getDocs(collection(item.ref,'members'));
-    return {...item.data(),id:item.id,members:members.docs.map(member=>member.data().name)};
+    const [members,invites]=await Promise.all([getDocs(collection(item.ref,'members')),getDocs(collection(item.ref,'invites'))]);
+    return {...item.data(),id:item.id,invite:invites.docs[0]?.id,members:members.docs.map(member=>member.data().name)};
   }));
 }
 
@@ -195,19 +195,29 @@ export async function saveClass(id,{name,subject,owner}) {
   const fields={name:name.trim(),subject:subject.trim()};
   if (!fields.name || !fields.subject) throw new Error('أدخل اسم الشعبة والمادة.');
   if (id) await updateDoc(doc(db,'classes',id),fields);
-  else await addDoc(collection(db,'classes'),{...fields,owner:owner || auth.currentUser.uid});
+  else {
+    const group=doc(collection(db,'classes'));
+    const batch=writeBatch(db);
+    batch.set(group,{...fields,owner:owner || auth.currentUser.uid});
+    batch.set(doc(collection(group,'invites')),{});
+    await batch.commit();
+  }
+}
+export function createClassInvite(id) {
+  return addDoc(collection(db,'classes',id,'invites'),{});
 }
 
 export async function joinClass(code,name) {
-  const id=code.trim();
-  if (!/^[A-Za-z0-9]{20}$/.test(id)) throw new Error('تأكّد من رمز الانضمام.');
+  const cleaned=code.trim();
+  if (!/^[A-Za-z0-9]{20}-[A-Za-z0-9]{20}$/.test(cleaned)) throw new Error('تأكّد من رمز الانضمام.');
+  const [id,invite]=cleaned.split('-');
   const uid=auth.currentUser.uid;
   const membership=doc(db,'studentProfiles',uid,'classes',id);
   try {
     await runTransaction(db,async transaction=>{
       if ((await transaction.get(membership)).exists()) return;
       transaction.set(membership,{});
-      transaction.set(doc(db,'classes',id,'members',uid),{name});
+      transaction.set(doc(db,'classes',id,'members',uid),{name,code:invite});
     });
   } catch (error) {
     if (error.code==='permission-denied') throw new Error('تعذّر الانضمام. تأكّد من رمز الشعبة.');
