@@ -66,9 +66,21 @@ function examDates(start, duration) {
   return `<div class="exam-dates"><div>البداية <bdi>${fmt(start)}</bdi></div>
     ${duration===undefined?'':`<div>النهاية <bdi>${fmt(Date.parse(start)+duration*60000)}</bdi></div>`}</div>`;
 }
+function classSubject(group) {
+  const match=/^(.+) \(([A-Z0-9][A-Z0-9 -]{0,19})\)$/.exec(group?.subject || '');
+  return match ? {name:match[1],code:match[2]} : {name:group?.subject || '',code:''};
+}
+function classTitle(group) {
+  const subject=classSubject(group);
+  return `${esc(subject.name)}${subject.code?` <bdi dir="ltr">(${esc(subject.code)})</bdi>`:''} <span>شعبة <bdi>${esc(group.name)}</bdi></span>`;
+}
+function examClassLabels(exam) {
+  const classes=(exam.classIds || []).map(id=>db.classes.find(group=>group.id===id)).filter(Boolean);
+  return classes.length?classes.map(group=>`<span class="badge">${classTitle(group)}</span>`).join(' '):`<span class="badge">${esc(exam.section)}</span>`;
+}
 function classChoices() {
   return `<fieldset><legend>الشُعب المستهدفة (من شعبة إلى 3)</legend>${db.classes.map(group=>
-    `<label class="choice"><input type="checkbox" name="classIds" value="${esc(group.id)}"> ${esc(group.name)} · ${esc(group.subject)}</label>`
+    `<label class="choice"><input type="checkbox" name="classIds" value="${esc(group.id)}"><span>${classTitle(group)}</span></label>`
   ).join('')}</fieldset>`;
 }
 function selectedClasses(form) {
@@ -80,15 +92,21 @@ function selectedClasses(form) {
 }
 function classes() {
   const student=role==='student';
-  const classFields=group=>`<label>اسم الشعبة<input name="name" value="${esc(group?.name)}" required maxlength="80"></label>
-    <label>المادة<input name="subject" value="${esc(group?.subject)}" required maxlength="80"></label>`;
+  const classFields=group=>{
+    const subject=classSubject(group);
+    return `<div class="class-fields">
+      <label>اسم المادة<input name="subjectName" value="${esc(subject.name)}" placeholder="أمن الشبكات" required maxlength="80"></label>
+      <label>رمز المادة<input name="subjectCode" value="${esc(subject.code)}" dir="ltr" placeholder="CYS 334" ${group?'':'required'} maxlength="20" autocapitalize="characters"></label>
+      <label>رقم الشعبة<input name="name" value="${esc(group?.name)}" dir="ltr" inputmode="numeric" placeholder="3" required maxlength="8"></label>
+    </div>`;
+  };
   const teacherOptions=role==='admin'?`<label>المدرّس<select name="owner" required><option value="">اختر المدرّس</option>${db.teachers.map(teacher=>
     `<option value="${esc(teacher.id)}">${esc(teacher.name)}</option>`).join('')}</select></label>`:'';
   return hero('الشُعب الدراسية',student?'شُعبي':'إدارة الشُعب',student?'أدخل الرمز اللي أعطاك إياه المدرّس لتظهر امتحانات الشعبة.':'أنشئ شعبة وشارك رمز الانضمام مع طلابها.')
     + (student?`<section class="card"><form id="join-class-form"><label>رمز الانضمام<input name="code" dir="ltr" required maxlength="41" autocomplete="off" spellcheck="false"></label>
       <div><button class="primary">انضم للشعبة</button></div></form></section>`:
       `<section class="card"><h2>إضافة شعبة</h2><form class="class-form">${classFields()}${teacherOptions}<div><button class="primary">إنشاء شعبة</button></div></form></section>`)
-    + (db.classes.length?db.classes.map(group=>`<section class="card"><h2>${esc(group.name)}</h2><p>${esc(group.subject)}</p>
+    + (db.classes.length?db.classes.map(group=>`<section class="card"><h2 class="class-title">${classTitle(group)}</h2>
       ${role==='admin'?`<p>المدرّس: ${esc(db.teachers.find(teacher=>teacher.id===group.owner)?.name || 'حساب غير متاح')}</p>`:''}
       ${student?'':`${group.invite?`<p>رمز الانضمام <code dir="ltr" style="overflow-wrap:anywhere">${esc(group.id+'-'+group.invite)}</code></p>`:button('إنشاء رمز انضمام','class-invite',group.id)}
       <details><summary>الطلاب المسجّلون (${num(group.members.length)})</summary>${group.members.length?
@@ -238,7 +256,7 @@ function exams() {
       student?'تابع مواعيد الامتحانات المنشورة وشعبها.':'أنشئ الأسئلة وانشر الامتحانات مع مواعيدها.')+
       `<div class="grid">${metric('الامتحانات المنشورة',db.exams.length)}${metric('المواعيد القادمة',upcoming)}${student?'':metric('أسئلة في البنك',db.questions.length)}</div>
       <div class="row"><h2>${student?'جدول الامتحانات':'الامتحانات المنشورة'}</h2><div class="actions">${button('تحديث القائمة','refresh-exams')}${student?'':button('إنشاء امتحان','page','create',true)}</div></div>
-      ${db.exams.length?db.exams.map(exam=>`<section class="card"><span class="badge">${esc(exam.section)}</span><h3>${esc(exam.title)}</h3>${examDates(exam.start,exam.ready?exam.duration:undefined)}<p class="muted">${quantity(exam.questionCount,'سؤال','سؤالان','أسئلة')} · ${quantity(exam.duration,'دقيقة','دقيقتان','دقائق')} · النجاح <bdi dir="ltr">${num(exam.pass)}%</bdi></p>
+      ${db.exams.length?db.exams.map(exam=>`<section class="card">${examClassLabels(exam)}<h3>${esc(exam.title)}</h3>${examDates(exam.start,exam.ready?exam.duration:undefined)}<p class="muted">${quantity(exam.questionCount,'سؤال','سؤالان','أسئلة')} · ${quantity(exam.duration,'دقيقة','دقيقتان','دقائق')} · النجاح <bdi dir="ltr">${num(exam.pass)}%</bdi></p>
         ${student?studentExamAction(exam):teacherExamActions(exam)}</section>`).join(''):'<p class="card">ما في امتحانات منشورة حاليًا.</p>'}`;
   }
   const resultCount = student ? db.results.filter(r=>r.student===account.id).length : db.results.length;
@@ -643,7 +661,14 @@ document.addEventListener('submit',event=>{
           return;
         }
         if (event.target.classList.contains('class-form') && ['teacher','admin'].includes(role)) {
-          await firebase.saveClass(event.target.dataset.id,values);
+          const name=num(values.name.trim());
+          const subjectCode=values.subjectCode.trim().toUpperCase().replace(/\s+/g,' ');
+          const subjectName=values.subjectName.trim();
+          if (!/^\d{1,8}$/.test(name)) throw new Error('أدخل رقم الشعبة بالأرقام.');
+          if (subjectCode && !/^[A-Z0-9][A-Z0-9 -]{0,19}$/.test(subjectCode)) throw new Error('أدخل رمز المادة مثل CYS 334.');
+          const subject=subjectCode?`${subjectName} (${subjectCode})`:subjectName;
+          if (!subjectName || subject.length>80) throw new Error('أدخل اسم مادة ورمزًا بمجموع لا يتجاوز 80 حرفًا.');
+          await firebase.saveClass(event.target.dataset.id,{name,subject,owner:values.owner});
           await loadFirebaseAccount(account);
           render();
           toast('تم حفظ الشعبة.');
