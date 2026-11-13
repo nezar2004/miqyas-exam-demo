@@ -5,7 +5,7 @@ const firebasePortal = pagesHost && ['student','teacher','admin'].includes(porta
 const staticPreview = pagesHost && !firebasePortal;
 let firebase;
 let registration = portal==='student' && params.has('register');
-const passwordReset = firebasePortal && params.has('reset') && !registration;
+const passwordReset = firebasePortal && portal==='student' && params.has('reset') && !registration;
 let account, role, db;
 let busy=false;
 const previousPages=[];
@@ -46,8 +46,8 @@ const paths = {
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 const menus = {
   student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي', notifications:'الإشعارات', studentProfile:'ملفي الشخصي'},
-  teacher:{exams:'إدارة الامتحانات', classes:'الشُعب', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
-  admin:{people:'حسابات المستخدمين', addTeacher:'إضافة حساب', classes:'إدارة الشُعب', subjects:'المواد', log:'سجل النشاط'}
+  teacher:{exams:'إدارة الامتحانات', classes:'الشُعب', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج', studentProfile:'ملفي الشخصي'},
+  admin:{people:'حسابات المستخدمين', addTeacher:'إضافة حساب', classes:'إدارة الشُعب', subjects:'المواد', log:'سجل النشاط', studentProfile:'ملفي الشخصي'}
 };
 const view = document.querySelector('#view');
 const nav = document.querySelector('#nav');
@@ -62,7 +62,11 @@ function applyTheme() {
 function closeMenu() {menuToggle.setAttribute('aria-expanded','false');}
 menuToggle.addEventListener('click',()=>menuToggle.setAttribute('aria-expanded',String(menuToggle.getAttribute('aria-expanded')!=='true')));
 applyTheme();
-const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char]);
+const esc = value => {
+  const safe=String(value ?? '').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[char]);
+  return miqyasLocale.english?safe.replace(/[\u0600-\u06ff]/g,char=>'&#'+char.charCodeAt(0)+';'):safe;
+};
+const t=miqyasLocale.text;
 const button = (label, action, id = '', primary = false) => `<button type="button" class="${primary ? 'primary' : ''}" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
 const hero = (tag, title, description) => `<section class="hero"><div class="eyebrow">${tag}</div><h1>${title}</h1><p>${description}</p></section>`;
 const num = (value, arabic = false) => String(value).replace(/[0-9٠-٩]/g, digit => {
@@ -75,9 +79,11 @@ const dateFormat = new Intl.DateTimeFormat('ar-EG-u-nu-latn',{day:'numeric',mont
 const timeFormat = new Intl.DateTimeFormat('ar-JO-u-nu-latn',{hour:'numeric',minute:'2-digit',hour12:true});
 function fmt(value) {
   const date = new Date(value);
+  if (miqyasLocale.english && Number.isFinite(+date)) return new Intl.DateTimeFormat('en',{dateStyle:'medium',timeStyle:'short'}).format(date);
   return Number.isFinite(+date)?num(dateFormat.format(date)+' - '+timeFormat.format(date),true):'—';
 }
 function quantity(count, singular, dual, plural) {
+  if (miqyasLocale.english) return count+' '+(count===1?singular:plural==='دقائق'?'minutes':plural);
   if (count===1) return singular;
   if (count===2) return dual;
   const remainder=count%100;
@@ -170,7 +176,7 @@ function navigate(next) {
   page=next;
   render();
 }
-function toast(message) { notice.textContent = message; }
+function toast(message) { notice.textContent = t(message); }
 async function loadFirebaseAccount(next) {
   const data=next?.name ? await (portal==='admin'?firebase.loadPeople():firebase.loadExams(portal)) : null;
   if (next?.role==='student' && data) {
@@ -188,9 +194,20 @@ async function loadFirebaseAccount(next) {
   if (!role || !menus[role][page]) page=role==='admin'?'people':'exams';
 }
 function render() {
+  renderScreen();
+  document.title=t(document.title);
+}
+const shellLabels={'#menu-toggle':'القائمة','#logout':'تسجيل الخروج','#back':'رجوع','#brand-name':'مقياس','.sidebar .brand small':'منصة التقييم الرقمي','.side-note':'منصة التقييم الرقمي'};
+function localizeShell() {
+  for (const [selector,label] of Object.entries(shellLabels)) document.querySelector(selector).textContent=t(label);
+  nav.setAttribute('aria-label',t('القائمة الرئيسية'));
+  document.querySelector('.top [role="navigation"]').setAttribute('aria-label',t('مسار الصفحة'));
+}
+localizeShell();
+function renderScreen() {
   if (firebasePortal && account?.verification) {
     document.body.classList.add('signed-out');
-    view.innerHTML=publicHeader()+`<section class="card">
+    view.innerHTML=t(publicHeader()+`<section class="card">
       <h1>تأكيد البريد الجامعي</h1>
       <p dir="ltr">${esc(account.email)}</p>
       <p>${account.verification==='domain'
@@ -201,38 +218,39 @@ function render() {
           ?button('تأكدت من بريدي','verify-email','',true)+button('إعادة إرسال رسالة التأكيد','resend-verification')
           :''}
         ${button('تسجيل الخروج','student-logout')}
-      </div></section>`;
+      </div></section>`);
     return;
   }
   if (firebasePortal && account && !account.name) {
     document.body.classList.add('signed-out');
-    view.innerHTML=publicHeader()+`<section class="card"><a class="back-link" href="index.html">العودة إلى البوابات</a>
+    view.innerHTML=t(publicHeader()+`<section class="card"><a class="back-link" href="index.html">العودة إلى البوابات</a>
       <h1>أكمل ملفك الشخصي</h1>
       <p dir="ltr">${esc(account.email)}</p>
       <form id="profile-form"><label>الاسم الكامل<input name="name" maxlength="100" autocomplete="name" required></label><div><button class="primary">حفظ الملف الشخصي</button></div></form>
-      <button type="button" data-action="student-logout">تسجيل الخروج</button></section>`;
+      <button type="button" data-action="student-logout">تسجيل الخروج</button></section>`);
     return;
   }
   document.body.classList.toggle('signed-out', !account);
   if (!account) {
     const entry = Object.hasOwn(portals,portal) ? portals[portal] : null;
     document.title = entry ? entry.title+' | مقياس' : 'مقياس | منصة التقييم الرقمي';
-    view.innerHTML = passwordReset ? resetPassword() : entry ? login(entry) : gateway();
+    view.innerHTML = t(passwordReset ? resetPassword() : entry ? login(entry) : gateway());
     return;
   }
   document.title = portals[role].title+' | مقياس';
   document.querySelector('#account-name').textContent = account.name;
-  document.querySelector('#account-role').textContent = roleNames[role];
+  document.querySelector('#account-role').textContent = t(roleNames[role]);
   const navIcons = {exams:'grid',classes:'cap',results:'chart',notifications:'clock',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',subjects:'paper',log:'clock'};
-  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?id!=='analytics':!['addTeacher','classes','studentProfile','subjects','notifications'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
-  document.querySelector('#workspace-role').textContent = portals[role].title;
-  document.querySelector('#section').textContent = menus[role][page] || (page==='roster'?'الطلاب والنتائج':'تقديم الامتحان');
+  nav.innerHTML = t(Object.entries(menus[role]).filter(([id])=>firebasePortal?id!=='analytics':!['addTeacher','classes','studentProfile','subjects','notifications'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join(''));
+  document.querySelector('#workspace-role').textContent = t(portals[role].title);
+  document.querySelector('#section').textContent = t(menus[role][page] || (page==='roster'?'الطلاب والنتائج':'تقديم الامتحان'));
   const screens = {exams, classes, results, notifications, studentProfile, bank, create, analytics, people, addTeacher, subjects, log, attempt, roster};
-  view.innerHTML = screens[page]();
+  view.innerHTML = t(screens[page]());
   tick();
 }
 function publicHeader() {
-  return `<header class="public-head"><a class="brand" href="index.html"><span class="logo">${icon('chart')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a><button type="button" data-theme-toggle aria-pressed="${darkMode}">الوضع الداكن</button></header>`;
+  const settings=!portal?`<div class="actions"><button type="button" data-language-toggle>${miqyasLocale.english?'العربية':'English'}</button><button type="button" data-theme-toggle aria-pressed="${darkMode}">الوضع الداكن</button></div>`:'';
+  return `<header class="public-head"><a class="brand" href="index.html"><span class="logo">${icon('chart')}</span><span>مقياس<small dir="ltr">MIQYAS</small></span></a>${settings}</header>`;
 }
 function illustration() {
   return `<div class="art" aria-hidden="true"><div class="art-orbit"></div><div class="art-sheet"><div class="art-top"><i></i><i></i><i></i></div><div class="art-content"><div class="art-line"></div><div class="art-line short"></div><div class="art-chart"><i></i><i></i><i></i><i></i><i></i></div></div></div><div class="art-check">${icon('shield')}</div></div>`;
@@ -271,7 +289,7 @@ function login(entry) {
       <fieldset ${staticPreview?'disabled':''}>${fields(registration)}</fieldset>
       ${registration && firebasePortal?'<p class="muted">سجّل ببريد الجامعة المنتهي بـ ‎@ses.yu.edu.jo‎.</p>':''}
       <button class="primary" ${staticPreview?'disabled':''}>${registration?'إنشاء الحساب':'تسجيل الدخول'}</button>
-    </form>${firebasePortal && !registration?`<a class="back-link" href="?portal=${portal}&amp;reset=1">نسيت كلمة المرور؟</a>`:''}${links}</section>
+    </form>${firebasePortal && portal==='student' && !registration?`<a class="back-link" href="?portal=student&amp;reset=1">نسيت كلمة المرور؟</a>`:''}${links}</section>
     <aside class="login-story"><span class="kicker">MIQYAS / ${entry.code}</span><h2>${entry.title}</h2><p>${entry.detail}</p>${illustration()}<span class="story-foot">مساحة العمل المخصصة · مقياس</span></aside></div>`;
 }
 function resetPassword() {
@@ -549,7 +567,7 @@ function tick() {
   if (countdown) {
     const seconds=Math.max(0,Math.ceil((Number(countdown.dataset.start)-Date.now())/1000));
     const clock=[Math.floor(seconds/3600)%24,Math.floor(seconds/60)%60,seconds%60].map(n=>num(n).padStart(2,'0')).join(':');
-    countdown.textContent=seconds>=86400?num(Math.floor(seconds/86400))+' يوم · '+clock:clock;
+    countdown.textContent=t(seconds>=86400?num(Math.floor(seconds/86400))+' يوم · '+clock:clock);
   }
   const timer=document.querySelector('#timer');
   if (!timer || !db?.attempts[active]) return;
@@ -602,9 +620,10 @@ function studentResults() {
     })):'<div class="student-empty"><h3>ما في نتائج بعد</h3><p>سلّم امتحانًا حتى تظهر علامتك هون.</p></div>'}</section>`;
 }
 function studentProfile() {
-  return hero('لوحة الطالب','ملفي الشخصي','حدّث اسمك أو كلمة المرور.')
-    + `<section class="card"><form id="student-name-form"><label>الاسم<input name="name" required maxlength="100" value="${esc(account.name)}"></label>
-      <p>البريد الجامعي <bdi dir="ltr">${esc(account.email)}</bdi></p><div><button class="primary">حفظ الاسم</button></div></form></section>
+  return hero(portals[role].title,'ملفي الشخصي',role==='student'?'حدّث اسمك أو كلمة المرور.':'راجع بيانات حسابك وغيّر كلمة المرور.')
+    + `<section class="card">${role==='student'?`<form id="student-name-form"><label>الاسم<input name="name" required maxlength="100" value="${esc(account.name)}"></label>
+      <p>البريد الجامعي <bdi dir="ltr">${esc(account.email)}</bdi></p><div><button class="primary">حفظ الاسم</button></div></form>`:
+      `<p>الاسم <bdi>${esc(account.name)}</bdi></p><p>البريد الإلكتروني <bdi dir="ltr">${esc(account.email)}</bdi></p><p>الدور <strong>${roleNames[role]}</strong></p>`}</section>
       <section class="card"><h2>تغيير كلمة المرور</h2><form id="student-password-form">
         <label>كلمة المرور الحالية<input dir="ltr" name="current" type="password" autocomplete="current-password" required></label>
         <label>كلمة المرور الجديدة<input dir="ltr" name="password" type="password" autocomplete="new-password" required minlength="12"></label>
@@ -689,7 +708,7 @@ function download(rows = [['الطالب','الامتحان','النسبة','ا�
     const str = String(value);
     return '"'+(/^[=+\-@\t\r\n]/.test(str.trimStart())?"'":"")+str.replaceAll('"','""')+'"';
   };
-  const url = URL.createObjectURL(new Blob(['\ufeff',rows.map(row=>row.map(cell).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
+  const url = URL.createObjectURL(new Blob(['\ufeff',rows.map((row,index)=>row.map(value=>cell(index===0?t(value):value)).join(',')).join('\r\n')],{type:'text/csv;charset=utf-8'}));
   const link = Object.assign(document.createElement('a'),{href:url,download:'exam-results.csv'});
   link.click();
   setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -727,6 +746,13 @@ document.querySelector('#back').addEventListener('click',()=>{
   render();
 });
 document.addEventListener('click',event=>{
+  if (event.target.closest('[data-language-toggle]')) {
+    miqyasLocale.toggle();
+    localizeShell();
+    render();
+    view.querySelector('[data-language-toggle]')?.focus();
+    return;
+  }
   if (event.target.closest('[data-theme-toggle]')) {
     darkMode=!darkMode;
     try {localStorage.setItem('miqyas-theme',darkMode?'dark':'light');} catch {}
@@ -765,7 +791,7 @@ document.addEventListener('click',event=>{
   });
   if (action==='remove-teacher' && firebasePortal && role==='admin') {
     const person=db.teachers.find(item=>item.id===id);
-    if (person && confirm('إلغاء صلاحية المدرّس عن '+person.name+'؟')) {
+    if (person && confirm(t('إلغاء صلاحية المدرّس عن')+' '+person.name+(miqyasLocale.english?'?':'؟'))) {
       perform(async()=>{
         await firebase.removeTeacher(person.id);
         await loadFirebaseAccount(account);
@@ -829,14 +855,14 @@ document.addEventListener('click',event=>{
     render();
     toast(db.passRate.total?'تم حساب النسبة من المحاولات المسلّمة.':'ما في محاولات مسلّمة ومصحّحة.');
   });
-  if (action==='delete-question' && role==='teacher' && confirm('حذف السؤال من بنك الأسئلة؟')) perform(async()=>{
+  if (action==='delete-question' && role==='teacher' && confirm(t('حذف السؤال من بنك الأسئلة؟'))) perform(async()=>{
     await firebase.removeQuestion(id);
     editingQuestionId=undefined;
     await loadFirebaseAccount(account);
     render();
     toast('تم حذف السؤال من البنك.');
   });
-  if (action==='cancel-exam' && role==='teacher' && confirm('إلغاء نشر الامتحان؟')) perform(async()=>{
+  if (action==='cancel-exam' && role==='teacher' && confirm(t('إلغاء نشر الامتحان؟'))) perform(async()=>{
     await firebase.editExam(db.exams.find(exam=>exam.id===id),{cancelled:true});
     await loadFirebaseAccount(account);
     render();
@@ -855,7 +881,7 @@ document.addEventListener('click',event=>{
     if (!db.attempts[active]) page='results';
     render();
   });
-  if (action==='finish' && confirm('تأكيد تسليم الامتحان؟')) perform(finishAttempt);
+  if (action==='finish' && confirm(t('تأكيد تسليم الامتحان؟'))) perform(finishAttempt);
   if (action==='export') download();
   if (action==='toggle') perform(async()=>{update(await api('accounts/toggle',{id}));render();});
 });
@@ -896,7 +922,7 @@ document.addEventListener('keydown',event=>{
 });
 window.addEventListener('offline',()=>{
   const status=document.querySelector('#attempt-save-status');
-  if (status) status.textContent='الاتصال مقطوع. اترك الصفحة مفتوحة حتى يرجع الاتصال.';
+  if (status) status.textContent=t('الاتصال مقطوع. اترك الصفحة مفتوحة حتى يرجع الاتصال.');
 });
 window.addEventListener('online',()=>{
   if (!firebasePortal || role!=='student') return;
@@ -1013,7 +1039,7 @@ document.addEventListener('submit',event=>{
           toast('تم حفظ الاسم.');
           return;
         }
-        if (event.target.id==='student-password-form' && role==='student') {
+        if (event.target.id==='student-password-form' && account?.role===role) {
           if (values.password!==values.confirmation) throw new Error('تأكيد كلمة المرور غير مطابق.');
           try {await firebase.changeStudentPassword(values.current,values.password);}
           catch (error) {
@@ -1074,11 +1100,11 @@ document.addEventListener('submit',event=>{
           status.hidden=true;
           try {
             await firebase.requestPasswordReset(values.email);
-            status.textContent='إذا كان البريد مسجّلًا، رح يوصلك رابط إعادة التعيين. افحص البريد الوارد والرسائل غير المرغوب فيها.';
+            status.textContent=t('إذا كان البريد مسجّلًا، رح يوصلك رابط إعادة التعيين. افحص البريد الوارد والرسائل غير المرغوب فيها.');
           } catch (error) {
-            status.textContent=error.code==='auth/too-many-requests'
+            status.textContent=t(error.code==='auth/too-many-requests'
               ? 'حاول مرة ثانية بعد فترة.'
-              : 'تعذّر طلب الرابط. تأكّد من البريد واتصالك بالإنترنت وحاول مرة ثانية.';
+              : 'تعذّر طلب الرابط. تأكّد من البريد واتصالك بالإنترنت وحاول مرة ثانية.');
           }
           status.hidden=false;
           return;
