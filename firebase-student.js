@@ -3,7 +3,7 @@ import {
   browserSessionPersistence, createUserWithEmailAndPassword, getAuth, initializeAuth, inMemoryPersistence, setPersistence,
   reload, sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, updateProfile
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
-import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, limit, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
+import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
 
 const app=initializeApp({
   apiKey:'AIzaSyDi06jtrahqfRYpdRG523x3aJpqkullLsc',
@@ -137,7 +137,7 @@ export async function loadPeople() {
   const assigned=new Set([...teacherAccounts,...adminAccounts].map(person=>person.id));
   const students=[...registered.values()].filter(person=>!assigned.has(person.id));
   const byName=(a,b)=>(a.name || '').localeCompare(b.name || '','ar');
-  return {students:students.sort(byName),teachers:teacherAccounts.sort(byName),admins:adminAccounts.sort(byName)};
+  return {students:students.sort(byName),teachers:teacherAccounts.sort(byName),admins:adminAccounts.sort(byName),classes:await loadClasses('admin')};
 }
 
 export async function createTeacher({name,email,password}) {
@@ -174,20 +174,80 @@ export function removeTeacher(id) {return deleteDoc(doc(db,'teacherRoles',id));}
 function bank() {
   return collection(db,'teacherBanks',auth.currentUser.uid,'questions');
 }
+async function loadClasses(portal) {
+  const uid=auth.currentUser.uid;
+  const classes=collection(db,'classes');
+  if (portal==='student') {
+    const memberships=await getDocs(collection(db,'studentProfiles',uid,'classes'));
+    return Promise.all(memberships.docs.map(async membership=>{
+      const item=await getDoc(doc(classes,membership.id));
+      return {...item.data(),id:item.id};
+    }));
+  }
+  const snapshots=await getDocs(portal==='teacher'?query(classes,where('owner','==',uid)):classes);
+  return Promise.all(snapshots.docs.map(async item=>{
+    const members=await getDocs(collection(item.ref,'members'));
+    return {...item.data(),id:item.id,members:members.docs.map(member=>member.data().name)};
+  }));
+}
+
+export async function saveClass(id,{name,subject,owner}) {
+  const fields={name:name.trim(),subject:subject.trim()};
+  if (!fields.name || !fields.subject) throw new Error('أدخل اسم الشعبة والمادة.');
+  if (id) await updateDoc(doc(db,'classes',id),fields);
+  else await addDoc(collection(db,'classes'),{...fields,owner:owner || auth.currentUser.uid});
+}
+
+export async function joinClass(code,name) {
+  const id=code.trim();
+  if (!/^[A-Za-z0-9]{20}$/.test(id)) throw new Error('تأكّد من رمز الانضمام.');
+  const uid=auth.currentUser.uid;
+  const membership=doc(db,'studentProfiles',uid,'classes',id);
+  try {
+    await runTransaction(db,async transaction=>{
+      if ((await transaction.get(membership)).exists()) return;
+      transaction.set(membership,{});
+      transaction.set(doc(db,'classes',id,'members',uid),{name});
+    });
+  } catch (error) {
+    if (error.code==='permission-denied') throw new Error('تعذّر الانضمام. تأكّد من رمز الشعبة.');
+    throw error;
+  }
+}
+
+async function studentExams(classes,attempts) {
+  const refs=await Promise.all(classes.map(group=>getDocs(collection(db,'classes',group.id,'exams'))));
+  const ids=new Set([...refs.flatMap(list=>list.docs.map(item=>item.id)),...attempts.docs.map(item=>item.id)]);
+  return (await Promise.all([...ids].map(id=>getDoc(doc(db,'publishedExams',id))))).filter(item=>item.exists());
+}
+
 export async function loadExams(portal) {
-  const papers=collection(db,'publishedExams');
-  const source=portal==='teacher'?query(papers,where('owner','==',auth.currentUser.uid),limit(100)):query(papers,limit(100));
-  const [exams,questions,attempts]=await Promise.all([
-    getDocs(source),portal==='teacher'?getDocs(bank()):null,
-    portal==='student'?getDocs(collection(db,'studentProfiles',auth.currentUser.uid,'attempts')):null
+  const teacher=portal==='teacher';
+  const uid=auth.currentUser.uid;
+  const [classes,questions,attempts,ownedExams]=await Promise.all([
+    loadClasses(portal),teacher?getDocs(bank()):null,
+    teacher?null:getDocs(collection(db,'studentProfiles',uid,'attempts')),
+    teacher?getDocs(query(collection(db,'publishedExams'),where('owner','==',uid))):null
   ]);
+  const exams=teacher?ownedExams.docs:await studentExams(classes,attempts);
   return {
-    exams:exams.docs.map(item=>({...item.data(),id:item.id,start:item.data().start.toDate().toISOString()}))
+    classes,
+    exams:exams.map(item=>({...item.data(),id:item.id,start:item.data().start.toDate().toISOString()}))
       .sort((a,b)=>Date.parse(a.start)-Date.parse(b.start)),
     questions:questions?.docs.map(item=>({...item.data(),id:item.id})) || [],
     results:[],attempts:{},
     submissions:Object.fromEntries(attempts?.docs.map(item=>[item.id,item.data()]) || [])
   };
+}
+function linkExamToClasses(batch,id,classIds) {
+  for (const classId of classIds) batch.set(doc(db,'classes',classId,'exams',id),{});
+}
+
+export async function assignLegacyExam(id,classIds) {
+  const batch=writeBatch(db);
+  batch.update(doc(db,'publishedExams',id),{classIds});
+  linkExamToClasses(batch,id,classIds);
+  await batch.commit();
 }
 export async function addQuestion(question) {
   await addDoc(bank(),question);
@@ -226,6 +286,7 @@ export async function publishExam({ids,shuffle,start,...metadata},bankQuestions)
   const exam=doc(collection(db,'publishedExams'));
   const batch=writeBatch(db);
   batch.set(exam,{...metadata,owner,questionCount:ids.length,start:Timestamp.fromDate(new Date(start)),publishedAt:serverTimestamp(),ready:true});
+  linkExamToClasses(batch,exam.id,metadata.classIds);
   batch.set(doc(db,'teacherBanks',owner,'papers',exam.id),{ids,shuffle});
   batch.set(doc(db,'examContent',exam.id),{questions:examQuestions(ids,bankQuestions),shuffle});
   batch.set(doc(db,'examKeys',exam.id),{answers:answerKey(ids,bankQuestions)});

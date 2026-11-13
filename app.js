@@ -33,9 +33,9 @@ const paths = {
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 const menus = {
-  student:{exams:'الامتحانات', results:'نتائجي'},
-  teacher:{exams:'إدارة الامتحانات', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
-  admin:{people:'حسابات المستخدمين', addTeacher:'إضافة مدرّس', log:'سجل النشاط'}
+  student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي'},
+  teacher:{exams:'إدارة الامتحانات', classes:'الشُعب', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
+  admin:{people:'حسابات المستخدمين', addTeacher:'إضافة مدرّس', classes:'إدارة الشُعب', log:'سجل النشاط'}
 };
 const view = document.querySelector('#view');
 const nav = document.querySelector('#nav');
@@ -66,9 +66,35 @@ function examDates(start, duration) {
   return `<div class="exam-dates"><div>البداية <bdi>${fmt(start)}</bdi></div>
     ${duration===undefined?'':`<div>النهاية <bdi>${fmt(Date.parse(start)+duration*60000)}</bdi></div>`}</div>`;
 }
-const defaultSections = Array.from({length:10},(_,index)=>'الشعبة '+num(index+1));
-function sectionOptions() {
-  return [...new Set([...defaultSections,...db.exams.map(exam=>exam.section).filter(Boolean)])];
+function classChoices() {
+  return `<fieldset><legend>الشُعب المستهدفة (من شعبة إلى 3)</legend>${db.classes.map(group=>
+    `<label class="choice"><input type="checkbox" name="classIds" value="${esc(group.id)}"> ${esc(group.name)} · ${esc(group.subject)}</label>`
+  ).join('')}</fieldset>`;
+}
+function selectedClasses(form) {
+  const ids=form.getAll('classIds');
+  if (!ids.length || ids.length>3 || !ids.every(id=>db.classes.some(group=>group.id===id))) {
+    throw new Error('اختر من شعبة إلى 3 شُعب.');
+  }
+  return ids;
+}
+function classes() {
+  const student=role==='student';
+  const classFields=group=>`<label>اسم الشعبة<input name="name" value="${esc(group?.name)}" required maxlength="80"></label>
+    <label>المادة<input name="subject" value="${esc(group?.subject)}" required maxlength="80"></label>`;
+  const teacherOptions=role==='admin'?`<label>المدرّس<select name="owner" required><option value="">اختر المدرّس</option>${db.teachers.map(teacher=>
+    `<option value="${esc(teacher.id)}">${esc(teacher.name)}</option>`).join('')}</select></label>`:'';
+  return hero('الشُعب الدراسية',student?'شُعبي':'إدارة الشُعب',student?'أدخل الرمز اللي أعطاك إياه المدرّس لتظهر امتحانات الشعبة.':'أنشئ شعبة وشارك رمز الانضمام مع طلابها.')
+    + (student?`<section class="card"><form id="join-class-form"><label>رمز الانضمام<input name="code" dir="ltr" required maxlength="20" autocomplete="off" spellcheck="false"></label>
+      <div><button class="primary">انضم للشعبة</button></div></form></section>`:
+      `<section class="card"><h2>إضافة شعبة</h2><form class="class-form">${classFields()}${teacherOptions}<div><button class="primary">إنشاء شعبة</button></div></form></section>`)
+    + (db.classes.length?db.classes.map(group=>`<section class="card"><h2>${esc(group.name)}</h2><p>${esc(group.subject)}</p>
+      ${role==='admin'?`<p>المدرّس: ${esc(db.teachers.find(teacher=>teacher.id===group.owner)?.name || 'حساب غير متاح')}</p>`:''}
+      ${student?'':`<p>رمز الانضمام <code dir="ltr">${esc(group.id)}</code></p>
+      <details><summary>الطلاب المسجّلون (${num(group.members.length)})</summary>${group.members.length?
+        `<ul>${group.members.map(name=>`<li>${esc(name)}</li>`).join('')}</ul>`:'<p>لسه ما انضم أي طالب.</p>'}</details>
+      <details><summary>تعديل الشعبة</summary><form class="class-form" data-id="${esc(group.id)}">${classFields(group)}
+      <div><button>حفظ التعديل</button></div></form></details>`}</section>`).join(''):'<p class="card">ما في شُعب حاليًا.</p>');
 }
 const completed = (id, student = account?.id) => db.results.find(result=>result.id===id && result.student===student);
 const studentName = r => r.studentName || r.student;
@@ -150,11 +176,11 @@ function render() {
   document.title = portals[role].title+' | مقياس';
   document.querySelector('#account-name').textContent = account.name;
   document.querySelector('#account-role').textContent = roleNames[role];
-  const navIcons = {exams:'grid',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
-  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['results','analytics','log'].includes(id):id!=='addTeacher').map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
+  const navIcons = {exams:'grid',classes:'cap',results:'chart',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
+  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['results','analytics','log'].includes(id):!['addTeacher','classes'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#workspace-role').textContent = portals[role].title;
   document.querySelector('#section').textContent = menus[role][page] || (page==='roster'?'كشف الأسماء':'تقديم الامتحان');
-  const screens = {exams, results, bank, create, analytics, people, addTeacher, log, attempt, roster};
+  const screens = {exams, classes, results, bank, create, analytics, people, addTeacher, log, attempt, roster};
   view.innerHTML = screens[page]();
   tick();
 }
@@ -228,6 +254,10 @@ function exams() {
     }).join('');
 }
 function teacherExamActions(exam) {
+  if (!exam.classIds?.length) return db.classes.length?
+    `<details><summary>ربط الامتحان بالشُعب</summary><form class="assign-exam-form" data-id="${esc(exam.id)}">${classChoices()}
+    <div><button class="primary">حفظ الشُعب</button></div></form></details>`:
+    button('أنشئ شعبة لربط الامتحان','page','classes');
   const start=Date.parse(exam.start);
   const isRunning=Date.now()>=start && Date.now()<start+exam.duration*60000;
   const actions=exam.ready?`<div class="actions">${button('كشف الأسماء','roster',exam.id)}
@@ -321,10 +351,11 @@ function bank() {
     )}</section>`;
 }
 function create() {
+  if (firebasePortal && !db.classes.length) return hero('أدوات المدرّس','إنشاء امتحان','أنشئ شعبة حتى تقدر تحدد مين يقدّم الامتحان.')+`<div class="card">${button('الانتقال إلى الشُعب','page','classes',true)}</div>`;
   if (firebasePortal && !db.questions.length) return hero('أدوات المدرّس','إنشاء امتحان','أضف سؤالًا واحدًا على الأقل لبنك الأسئلة حتى تقدر تنشر امتحان.')+`<div class="card">${button('الانتقال إلى بنك الأسئلة','page','bank',true)}</div>`;
   return hero('أدوات المدرّس','إنشاء امتحان','حدّد قواعد الامتحان واختر الأسئلة من البنك.') +
     `<section class="card"><form id="exam-form"><label>اسم الامتحان<input name="title" required minlength="3" maxlength="100"></label>
-    ${firebasePortal?`<label>الشعبة<select name="section" required><option value="">اختر الشعبة</option>${sectionOptions().map(section=>`<option value="${esc(section)}">${esc(section)}</option>`).join('')}</select></label>`:''}
+    ${firebasePortal?classChoices():''}
     <div class="grid"><label>المدة بالدقائق<input type="number" name="duration" value="5" min="1" max="180" required></label>
     <label>علامة النجاح (%)<input type="number" name="pass" value="60" min="0" max="100" required></label>
     <label>وقت البداية${firebasePortal?'':' (اختياري)'}<input type="datetime-local" name="start" ${firebasePortal?'required':''}></label></div>
@@ -597,7 +628,28 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=11');
+        firebase ??= await import('./firebase-student.js?v=12');
+        if (event.target.id==='join-class-form' && role==='student') {
+          await firebase.joinClass(values.code,account.name);
+          await loadFirebaseAccount(account);
+          navigate('exams');
+          toast('تم الانضمام للشعبة.');
+          return;
+        }
+        if (event.target.classList.contains('class-form') && ['teacher','admin'].includes(role)) {
+          await firebase.saveClass(event.target.dataset.id,values);
+          await loadFirebaseAccount(account);
+          render();
+          toast('تم حفظ الشعبة.');
+          return;
+        }
+        if (event.target.classList.contains('assign-exam-form') && role==='teacher') {
+          await firebase.assignLegacyExam(event.target.dataset.id,selectedClasses(form));
+          await loadFirebaseAccount(account);
+          render();
+          toast('تم ربط الامتحان بالشُعب.');
+          return;
+        }
         if (event.target.classList.contains('reschedule-exam-form') && role==='teacher') {
           const start=new Date(values.start);
           if (!Number.isFinite(+start) || +start<=Date.now()) throw new Error('اختَر موعد بداية بالمستقبل.');
@@ -656,10 +708,11 @@ document.addEventListener('submit',event=>{
         if (event.target.id==='exam-form') {
           const ids=form.getAll('questions');
           const title=values.title.trim();
-          const section=values.section.trim();
+          const classIds=selectedClasses(form);
+          const section=db.classes.find(group=>group.id===classIds[0]).name;
           if (title.length<3) throw new Error('اسم الامتحان لازم يكون 3 أحرف على الأقل.');
-          if (!sectionOptions().includes(section) || !ids.length || ids.length>100) throw new Error('اختر الشعبة ومن سؤال واحد إلى 100 سؤال.');
-          await firebase.publishExam({title,section,ids,start:new Date(values.start).toISOString(),duration:Number(values.duration),pass:Number(values.pass),shuffle:form.has('shuffle')},db.questions);
+          if (!ids.length || ids.length>100) throw new Error('اختر من سؤال واحد إلى 100 سؤال.');
+          await firebase.publishExam({title,section,classIds,ids,start:new Date(values.start).toISOString(),duration:Number(values.duration),pass:Number(values.pass),shuffle:form.has('shuffle')},db.questions);
           await loadFirebaseAccount(account);
           navigate('exams');
           toast('تم نشر الامتحان.');
@@ -726,7 +779,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=11');
+    firebase=await import('./firebase-student.js?v=12');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

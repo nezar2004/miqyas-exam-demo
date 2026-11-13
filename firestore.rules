@@ -9,6 +9,72 @@ service cloud.firestore {
       return request.auth != null
         && exists(/databases/$(database)/documents/adminRoles/$(request.auth.uid));
     }
+    // A random class ID doubles as its join code. Membership is indexed by class and student.
+    function classOwner(id) {
+      return get(/databases/$(database)/documents/classes/$(id)).data.owner;
+    }
+    function managesClass(id) {
+      return admin() || (teacher() && classOwner(id) == request.auth.uid);
+    }
+    function enrolled(id) {
+      return exists(/databases/$(database)/documents/classes/$(id)/members/$(request.auth.uid));
+    }
+    function validClass(data) {
+      return data.keys().hasOnly(['owner', 'name', 'subject'])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 80;
+    }
+    match /classes/{id} {
+      allow get: if admin() || (teacher() && resource.data.owner == request.auth.uid)
+        || (student(request.auth.uid) && enrolled(id));
+      allow list: if admin() || (teacher() && resource.data.owner == request.auth.uid);
+      allow create: if (admin() || teacher()) && validClass(request.resource.data)
+        && request.resource.data.owner is string
+        && (request.resource.data.owner == request.auth.uid && teacher()
+          || admin() && exists(/databases/$(database)/documents/teacherRoles/$(request.resource.data.owner)));
+      allow update: if managesClass(id) && validClass(request.resource.data)
+        && request.resource.data.owner == resource.data.owner;
+      match /members/{uid} {
+        allow list: if managesClass(id);
+        allow get: if managesClass(id) || student(uid);
+        allow create: if student(uid)
+          && exists(/databases/$(database)/documents/classes/$(id))
+          && request.resource.data.keys().hasOnly(['name'])
+          && request.resource.data.name == get(/databases/$(database)/documents/studentProfiles/$(uid)).data.name
+          && existsAfter(/databases/$(database)/documents/studentProfiles/$(uid)/classes/$(id));
+      }
+      match /exams/{examId} {
+        allow list: if managesClass(id) || (student(request.auth.uid) && enrolled(id));
+        allow create: if teacher() && classOwner(id) == request.auth.uid
+          && request.resource.data.keys().size() == 0
+          && getAfter(/databases/$(database)/documents/publishedExams/$(examId)).data.owner == request.auth.uid
+          && id in getAfter(/databases/$(database)/documents/publishedExams/$(examId)).data.classIds;
+      }
+    }
+    match /studentProfiles/{uid}/classes/{id} {
+      allow read: if student(uid);
+      allow create: if student(uid) && request.resource.data.keys().size() == 0
+        && existsAfter(/databases/$(database)/documents/classes/$(id)/members/$(uid));
+    }
+    function classAccess(exam) {
+      let ids = exam.get('classIds', []);
+      return (ids.size() > 0 && enrolled(ids[0]))
+        || (ids.size() > 1 && enrolled(ids[1]))
+        || (ids.size() > 2 && enrolled(ids[2]));
+    }
+    function ownsClassTargets(ids) {
+      return ids is list && ids.size() >= 1 && ids.size() <= 3
+        && ids.toSet().size() == ids.size()
+        && ownsClassTarget(ids[0])
+        && (ids.size() < 2 || ownsClassTarget(ids[1]))
+        && (ids.size() < 3 || ownsClassTarget(ids[2]));
+    }
+    function ownsClassTarget(id) {
+      return id is string && id.matches('^[A-Za-z0-9]{20}$') && classOwner(id) == request.auth.uid;
+    }
+    function hasAttempt(id) {
+      return exists(/databases/$(database)/documents/studentProfiles/$(request.auth.uid)/attempts/$(id));
+    }
     match /adminRoles/{uid} {
       allow get: if request.auth != null && request.auth.uid == uid;
       allow list: if admin();
@@ -58,9 +124,10 @@ service cloud.firestore {
     match /publishedExams/{id} {
       function validExam() {
         let exam = request.resource.data;
-        return exam.keys().hasOnly(['owner', 'title', 'section', 'start', 'duration', 'pass', 'questionCount', 'publishedAt', 'ready'])
+        return exam.keys().hasOnly(['owner', 'title', 'section', 'classIds', 'start', 'duration', 'pass', 'questionCount', 'publishedAt', 'ready'])
           && exam.owner == request.auth.uid
-          && exam.title is string && exam.title.size() > 0 && exam.title.size() <= 100
+          && ownsClassTargets(exam.classIds)
+          && exam.title is string && exam.title.size() >= 3 && exam.title.size() <= 100
           && exam.section is string && exam.section.size() > 0 && exam.section.size() <= 80
           && exam.start is timestamp
           && exam.duration is int && exam.duration >= 1 && exam.duration <= 180
@@ -68,7 +135,9 @@ service cloud.firestore {
           && exam.questionCount is int && exam.questionCount >= 1 && exam.questionCount <= 100
           && exam.publishedAt == request.time;
       }
-      allow read: if teacher() || admin() || verifiedUniversityEmail();
+      allow list: if admin() || (teacher() && resource.data.owner == request.auth.uid);
+      allow get: if admin() || (teacher() && resource.data.owner == request.auth.uid)
+        || (student(request.auth.uid) && (classAccess(resource.data) || hasAttempt(id)));
       allow create: if teacher() && validExam()
         && existsAfter(/databases/$(database)/documents/teacherBanks/$(request.auth.uid)/papers/$(id))
         && request.resource.data.ready == true
@@ -84,6 +153,10 @@ service cloud.firestore {
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['start'])
             && request.resource.data.start > request.time)
         );
+      allow update: if teacher() && resource.data.owner == request.auth.uid
+        && resource.data.get('classIds', []).size() == 0
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['classIds'])
+        && ownsClassTargets(request.resource.data.classIds);
     }
     function duringExam(exam) {
       return exam.get('ready', false) == true && request.time >= exam.start
@@ -128,7 +201,7 @@ service cloud.firestore {
       }
       allow get: if request.auth != null &&
         ((teacher() && exam().owner == request.auth.uid)
-        || (student(request.auth.uid) && duringExam(exam())));
+        || (student(request.auth.uid) && duringExam(exam()) && (classAccess(exam()) || hasAttempt(id))));
       allow create: if teacher() && published().owner == request.auth.uid && published().ready == true
         && request.resource.data.keys().hasOnly(['questions', 'shuffle'])
         && request.resource.data.questions is list
@@ -141,7 +214,7 @@ service cloud.firestore {
       }
       allow list: if student(uid);
       allow get: if student(uid) || ownsExam(id);
-      allow create: if student(uid) && duringExam(exam())
+      allow create: if student(uid) && duringExam(exam()) && classAccess(exam())
         && request.resource.data.keys().hasOnly(['startedAt','answers','review','submittedAt'])
         && request.resource.data.startedAt == request.time
         && request.resource.data.answers == {} && request.resource.data.review == {}
