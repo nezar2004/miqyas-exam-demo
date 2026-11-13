@@ -21,6 +21,10 @@ let resultId;
 let directoryPage=0;
 let directoryFilter={search:'',role:'all'};
 let bankSearch='';
+let bankFilters={subject:'',topic:'',difficulty:''};
+let accountEdit;
+let subjectEdit;
+const difficulties={easy:'سهل',medium:'متوسط',hard:'صعب'};
 let copiedExam;
 let savingAnswer=false;
 let pendingAnswer;
@@ -43,7 +47,7 @@ const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
 const menus = {
   student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي', studentProfile:'ملفي الشخصي'},
   teacher:{exams:'إدارة الامتحانات', classes:'الشُعب', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج'},
-  admin:{people:'حسابات المستخدمين', addTeacher:'إضافة مدرّس', classes:'إدارة الشُعب', log:'سجل النشاط'}
+  admin:{people:'حسابات المستخدمين', addTeacher:'إضافة حساب', classes:'إدارة الشُعب', subjects:'المواد', log:'سجل النشاط'}
 };
 const view = document.querySelector('#view');
 const nav = document.querySelector('#nav');
@@ -208,11 +212,11 @@ function render() {
   document.title = portals[role].title+' | مقياس';
   document.querySelector('#account-name').textContent = account.name;
   document.querySelector('#account-role').textContent = roleNames[role];
-  const navIcons = {exams:'grid',classes:'cap',results:'chart',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',log:'clock'};
-  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?!['analytics','log'].includes(id):!['addTeacher','classes','studentProfile'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
+  const navIcons = {exams:'grid',classes:'cap',results:'chart',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',subjects:'paper',log:'clock'};
+  nav.innerHTML = Object.entries(menus[role]).filter(([id])=>firebasePortal?id!=='analytics':!['addTeacher','classes','studentProfile','subjects'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join('');
   document.querySelector('#workspace-role').textContent = portals[role].title;
   document.querySelector('#section').textContent = menus[role][page] || (page==='roster'?'الطلاب والنتائج':'تقديم الامتحان');
-  const screens = {exams, classes, results, studentProfile, bank, create, analytics, people, addTeacher, log, attempt, roster};
+  const screens = {exams, classes, results, studentProfile, bank, create, analytics, people, addTeacher, subjects, log, attempt, roster};
   view.innerHTML = screens[page]();
   tick();
 }
@@ -264,7 +268,7 @@ function studentDashboard() {
   const boundaries=[];
   for (const exam of db.exams) {
     const start=Date.parse(exam.start);
-    const end=start+exam.duration*60000;
+    const end=start+(exam.duration+(exam.extra || 0))*60000;
     const saved=db.submissions[exam.id];
     if (exam.ready) boundaries.push(start,end);
     const status=saved?.submittedAt || (exam.ready && (end<=now || saved?.startedAt?.toMillis()<start))?'complete':
@@ -319,15 +323,20 @@ function exams() {
     }).join('');
 }
 function teacherExamActions(exam) {
+  if (exam.cancelled) return '<span class="badge warn">أُلغي النشر</span>'+button('نسخ الامتحان','copy-exam',exam.id);
   if (!exam.classIds?.length) return db.classes.length?
     `<details><summary>ربط الامتحان بالشُعب</summary><form class="assign-exam-form" data-id="${esc(exam.id)}">${classChoices()}
     <div><button class="primary">حفظ الشُعب</button></div></form></details>`:
     button('أنشئ شعبة لربط الامتحان','page','classes');
   const start=Date.parse(exam.start);
-  const isRunning=Date.now()>=start && Date.now()<start+exam.duration*60000;
   const actions=exam.ready?`<div class="actions">${button('الطلاب والنتائج','roster',exam.id)}${button('نسخ الامتحان','copy-exam',exam.id)}
-    ${isRunning?'':button('تغيير الموعد','reschedule-exam',exam.id)}</div>`:'';
-  if (exam.ready && reschedulingExamId!==exam.id) return actions;
+    ${Date.now()<start?button('تغيير الموعد','reschedule-exam',exam.id):''}</div>`:'';
+  const edits=Date.now()<start?`<details><summary>تعديل الامتحان</summary><form class="exam-settings" data-id="${esc(exam.id)}">
+    <label>اسم الامتحان<input name="title" value="${esc(exam.title)}" required minlength="3" maxlength="100"></label>
+    <label>المدة<input name="duration" type="number" value="${exam.duration}" min="1" max="180" required></label>
+    <label>نسبة النجاح<input name="pass" type="number" value="${exam.pass}" min="0" max="100" required></label>
+    <div><button>حفظ التعديل</button></div></form></details>${button('إلغاء النشر','cancel-exam',exam.id)}`:'';
+  if (exam.ready && reschedulingExamId!==exam.id) return actions+edits;
   return actions+`<form class="${exam.ready?'reschedule-exam-form':'enable-exam-form'}" data-id="${esc(exam.id)}">
     <label>وقت البداية الجديد<input type="datetime-local" name="start" required></label>
     <div class="actions"><button class="primary">${exam.ready?'حفظ الموعد':'تفعيل تقديم الامتحان'}</button>
@@ -344,7 +353,7 @@ function studentExamAction(exam) {
   }
   if (saved?.startedAt?.toMillis()<start) return button('عرض علامة المحاولة السابقة','grade',exam.id);
   if (Date.now()<start) return '<span class="badge">لم يبدأ بعد</span>';
-  if (Date.now()>=start+exam.duration*60000) {
+  if (Date.now()>=start+(exam.duration+(exam.extra || 0))*60000) {
     return saved?button('عرض علامة الإجابات المحفوظة','grade',exam.id):'<span class="badge warn">انتهى وقت التقديم</span>';
   }
   return button(saved?'متابعة الامتحان':'ابدأ الامتحان','start',exam.id,true);
@@ -376,9 +385,10 @@ function roster() {
       ${metric('المتوسط',average)}${metric('أعلى نسبة',marks.length?percent(Math.max(...marks)):'—')}
       ${metric('أدنى نسبة',marks.length?percent(Math.min(...marks)):'—')}${metric('نسبة النجاح',pass)}</div>
     <section class="card"><div class="row"><h2>الطلاب والعلامات</h2><div class="actions">${button('تحديث النتائج','roster',exam.id)}${entries.length?button('تصدير CSV','roster-export'):''}</div></div>
-    ${entries.length?table(['اسم الطالب','الحالة','العلامة'],entries.map(entry=>[
+    ${entries.length?table(['اسم الطالب','الحالة','العلامة','وقت إضافي'],entries.map(entry=>[
       esc(entry.name),entry.submitted?'انتهت المحاولة':'بدأ الامتحان',
-      entry.grade?`<bdi dir="ltr">${num(entry.grade.earned)} / ${num(entry.grade.total)}</bdi> · <bdi dir="ltr">${num(entry.grade.percent)}%</bdi>`:'—'
+      entry.grade?`<bdi dir="ltr">${num(entry.grade.earned)} / ${num(entry.grade.total)}</bdi> · <bdi dir="ltr">${num(entry.grade.percent)}%</bdi>`:'—',
+      entry.canExtend?`<form class="extension-form" data-id="${esc(entry.id)}"><label>دقائق إضافية<input name="minutes" type="number" min="1" max="120" value="${entry.minutes || 5}" required></label><button>حفظ</button></form>`:entry.minutes?num(entry.minutes)+' دقيقة':'—'
     ])):'<p>لسه ما في محاولات مسجّلة لهالامتحان.</p>'}</section>
     ${marks.length?`<section class="card"><h2>توزيع العلامات</h2>${table(['النسبة','عدد الطلاب'],buckets.map(([label,inRange])=>[
       `<bdi>${label}</bdi>`,num(marks.filter(inRange).length)
@@ -413,10 +423,16 @@ function bank() {
   const count=existing?.options.length ?? 4;
   const boolean=existing?.options.length===2 && existing.options[0]==='صح' && existing.options[1]==='خطأ';
   const counts=[...new Set([2,4,6,count])].sort((a,b)=>a-b);
+  const difficultyOptions=value=>Object.entries(difficulties).map(([id,label])=>`<option value="${id}" ${id===value?'selected':''}>${label}</option>`).join('');
+  const matching=db.questions.filter(q=>[q.prompt,...q.options].some(value=>value.toLowerCase().includes(bankSearch))
+    && ['subject','topic','difficulty'].every(key=>!bankFilters[key] || (q[key] || '').toLowerCase().includes(bankFilters[key])));
   return hero('أدوات المدرّس','بنك الأسئلة','أضف أسئلة اختيار من متعدد أو صح وخطأ لاستخدامها في امتحاناتك.') +
     `<section class="card"><h2>${existing?'تعديل سؤال':'إضافة سؤال'}</h2><form id="question-form" data-id="${esc(existing?.id ?? '')}">
     <label>نوع السؤال<select id="question-type" name="type"><option value="multiple">اختيار من متعدد</option><option value="boolean" ${boolean?'selected':''}>صح أو خطأ</option></select></label>
     <label>نص السؤال<textarea name="prompt" required maxlength="400">${esc(existing?.prompt ?? '')}</textarea></label>
+    ${firebasePortal?`<div class="grid"><label>المادة<input name="subject" maxlength="80" value="${esc(existing?.subject)}"></label>
+    <label>الموضوع<input name="topic" maxlength="80" value="${esc(existing?.topic)}"></label>
+    <label>الصعوبة<select name="difficulty"><option value="">غير مصنّف</option>${difficultyOptions(existing?.difficulty)}</select></label></div>`:''}
     <fieldset id="multiple-options" class="answer-options" ${boolean?'hidden disabled':''}><legend>خيارات الإجابة</legend>
     <label>عدد الخيارات<select id="option-count">${counts.map(n=>`<option value="${n}" ${n===count?'selected':''}>${num(n)}</option>`).join('')}</select></label>
     <p class="muted">حدّد مربع الإجابة الصحيحة.</p>
@@ -425,9 +441,12 @@ function bank() {
     ${['صح','خطأ'].map((answer,index)=>answerOption(index,answer,2,boolean?existing:null)).join('')}</fieldset>
     <label>العلامة<input name="points" type="number" min="1" max="100" value="${existing?.points ?? 1}" required></label>
     <div class="actions"><button class="primary">${existing?'حفظ التعديل':'حفظ السؤال'}</button>${existing?button('إلغاء التعديل','cancel-question-edit'):''}</div></form></section>
-    <section class="card"><h2>الأسئلة المحفوظة</h2>${firebasePortal?`<form id="bank-search"><label>البحث في الأسئلة<input name="search" type="search" value="${esc(bankSearch)}"></label><div><button>بحث</button></div></form>`:''}${table(
+    <section class="card"><h2>الأسئلة المحفوظة</h2>${firebasePortal?`<form id="bank-search"><div class="grid"><label>البحث في الأسئلة<input name="search" type="search" value="${esc(bankSearch)}"></label>
+      <label>المادة<input name="subject" value="${esc(bankFilters.subject)}"></label><label>الموضوع<input name="topic" value="${esc(bankFilters.topic)}"></label>
+      <label>الصعوبة<select name="difficulty"><option value="">الكل</option>${difficultyOptions(bankFilters.difficulty)}</select></label></div><div><button>بحث</button></div></form>`:''}${table(
       ['السؤال','الإجابة الصحيحة','العلامة',...(firebasePortal?['الإجراء']:[])],
-      db.questions.filter(q=>[q.prompt,...q.options].some(value=>value.toLowerCase().includes(bankSearch))).map(q=>[esc(q.prompt),esc(q.options[q.correct]),num(q.points),...(firebasePortal?[button('تعديل','edit-question',q.id)]:[])])
+      matching.map(q=>[esc(q.prompt)+(firebasePortal?`<small class="muted"> ${[q.subject,q.topic,difficulties[q.difficulty]].filter(Boolean).map(esc).join(' · ')}</small>`:''),esc(q.options[q.correct]),num(q.points),
+        ...(firebasePortal?[button('تعديل','edit-question',q.id)+button('حذف','delete-question',q.id)]:[])])
     )}</section>`;
 }
 function create() {
@@ -513,6 +532,11 @@ function tick() {
   if (!seconds && !busy && Date.now()>=nextExpiryCheck) {
     nextExpiryCheck=Date.now()+5000;
     if (!firebasePortal || navigator.onLine) perform(async()=>{
+      if (firebasePortal) {
+        const exam=db.exams.find(item=>item.id===active);
+        const deadline=await firebase.attemptDeadline(exam);
+        if (deadline>Date.now()) {db.attempts[active].deadline=deadline;return;}
+      }
       if (pendingAnswer) {
         pendingAnswer=undefined;
         await finishAttempt();
@@ -537,7 +561,7 @@ function studentResults() {
       + `<div class="actions">${button('كل النتائج','all-results')}${button('تحديث التفاصيل','grade',exam.id)}</div>
       <section class="card">${grade?.details?.length?table(['السؤال','إجابتك','الإجابة الصحيحة','العلامة'],grade.details.map(item=>[
         esc(item.prompt),esc(item.selected ?? 'بدون إجابة'),esc(item.correct ?? 'غير متاحة'),`<bdi dir="ltr">${num(item.earned)}/${num(item.points)}</bdi>`
-      ])):`<p>${Date.now()<Date.parse(exam.start)+exam.duration*60000?'تفاصيل الإجابات بتظهر بعد انتهاء وقت الامتحان للجميع.':'تفاصيل الإجابات غير متاحة حاليًا.'}</p>`}</section>`;
+      ])):`<p>${Date.now()<Date.parse(exam.start)+(exam.duration+(exam.extra || 0))*60000?'تفاصيل الإجابات بتظهر بعد انتهاء وقت الامتحان.':'تفاصيل الإجابات غير متاحة حاليًا.'}</p>`}</section>`;
   }
   const marks=history.map(exam=>grades.get(exam.id)).filter(Boolean);
   const points=marks.map((mark,index)=>[marks.length===1?150:12+276*index/(marks.length-1),110-mark.percent]);
@@ -577,22 +601,25 @@ function people() {
   if (firebasePortal) {
     const roles={students:'طالب',teachers:'مدرّس',admins:'مدير'};
     const filtered=Object.entries(roles).filter(([key])=>directoryFilter.role==='all' || directoryFilter.role===key)
-      .flatMap(([key,label])=>db[key].map(person=>({...person,label,teacher:key==='teachers'})))
+      .flatMap(([key,label])=>db[key].map(person=>({...person,label,kind:key==='teachers'?'teacher':key==='students'?'student':''})))
       .filter(person=>[person.name,person.email].some(value=>value?.toLowerCase().includes(directoryFilter.search)));
     const lastPage=Math.max(0,Math.ceil(filtered.length/15)-1);
     directoryPage=Math.min(directoryPage,lastPage);
     const visible=filtered.slice(directoryPage*15,directoryPage*15+15);
     return hero('لوحة الإدارة','الحسابات والصلاحيات','راجع الطلاب والمدرّسين والمديرين وأدر صلاحية التدريس.')+
-      `<div class="grid">${metric('الطلاب',db.students.length)}${metric('المدرّسون',db.teachers.length)}${metric('المديرون',db.admins.length)}</div>
-      <div class="actions">${button('إضافة مدرّس','page','addTeacher',true)}${button('تحديث القوائم','refresh-exams')}</div>
+      `<div class="grid">${metric('الطلاب',db.students.length)}${metric('المدرّسون',db.teachers.length)}${metric('الامتحانات',db.exams.length)}
+        ${metric('نسبة النجاح',db.passRate?.total?Math.round(100*db.passRate.passed/db.passRate.total)+'%':'—')}</div>
+      <div class="actions">${button('إضافة حساب','page','addTeacher',true)}${button('تحديث القوائم','refresh-exams')}${button('حساب نسبة النجاح','platform-pass-rate')}</div>
       <section class="card"><form id="directory-filter"><div class="grid">
         <label>الاسم أو البريد<input name="search" type="search" value="${esc(directoryFilter.search)}"></label>
         <label>الدور<select name="role"><option value="all">كل الأدوار</option>${Object.entries(roles).map(([key,label])=>
           `<option value="${key}" ${directoryFilter.role===key?'selected':''}>${label}</option>`).join('')}</select></label>
       </div><div><button>تطبيق الفلتر</button></div></form>
-      ${visible.length?table(['الاسم','البريد','الدور','الإجراء'],visible.map(person=>[
-        esc(person.name || '—'),esc(person.email || '—'),person.label,
-        person.teacher?button('إلغاء صلاحية المدرّس','remove-teacher',person.id):'—'
+      ${visible.length?table(['الاسم','البريد','الدور','الحالة','الإجراء'],visible.map(person=>[
+        esc(person.name || '—'),esc(person.email || '—'),person.label,person.disabled?'موقوف':'مفعّل',
+        person.kind?`<details ${accountEdit===person.id?'open':''}><summary>إدارة الحساب</summary><form class="account-settings" data-id="${esc(person.id)}" data-role="${person.kind}">
+          <label>الاسم<input name="name" required maxlength="100" value="${esc(person.name)}"></label>
+          <label class="choice"><input type="checkbox" name="disabled" ${person.disabled?'checked':''}> إيقاف الحساب</label><button>حفظ</button></form></details>`:'—'
       ]),1):'<p>ما في حسابات مطابقة للبحث.</p>'}
       ${lastPage?`<div class="actions">${directoryPage>0?button('السابق','directory-page',directoryPage-1):''}
         <span>صفحة ${num(directoryPage+1)} من ${num(lastPage+1)}</span>
@@ -603,14 +630,33 @@ function people() {
     <section class="card">${table(['الاسم','البريد','الدور','الحالة','الإجراء'],db.people.map(p=>[esc(p.name),esc(p.email),roleNames[p.role],p.enabled?'مفعّل':'موقوف',p.role==='admin'?'—':button(p.enabled?'إيقاف':'تفعيل','toggle',p.id)]),1)}</section>`;
 }
 function addTeacher() {
-  return hero('لوحة الإدارة','إضافة مدرّس','أنشئ حسابًا جديدًا للمدرّس حتى يدخل من بوابته مباشرة.')+
-    `<section class="card"><form id="create-teacher-form">${fields(true)}
-      <div class="actions"><button class="primary">إنشاء حساب المدرّس</button>${button('رجوع للحسابات','page','people')}</div>
+  return hero('لوحة الإدارة','إضافة حساب','حساب الطالب يحتاج تأكيد بريده الجامعي قبل الدخول.')+
+    `<section class="card"><form id="create-teacher-form"><label>الدور<select name="role"><option value="teacher">مدرّس</option><option value="student">طالب</option></select></label>${fields(true)}
+      <div class="actions"><button class="primary">إنشاء الحساب</button>${button('رجوع للحسابات','page','people')}</div>
     </form></section>`;
 }
 function log() {
+  if (firebasePortal) {
+    const actions={account:'إدارة حساب',subject:'حفظ مادة',publish:'نشر امتحان',schedule:'تغيير موعد',exam:'تعديل امتحان',cancel:'إلغاء نشر'};
+    const names=new Map([...db.students,...db.teachers,...db.admins].map(person=>[person.id,person.name]));
+    return hero('لوحة الإدارة','سجل النشاط','راجع تغييرات الحسابات والمواد والامتحانات.')+
+      `<section class="card">${db.log.length?table(['الإجراء','نفّذه','المعرّف','الوقت'],db.log.map(item=>[
+        esc(actions[item.action]),esc(names.get(item.actor) || item.actor),esc(item.target),fmt(item.at.toDate())
+      ])):'<p>لا توجد أحداث مسجّلة بعد.</p>'}</section>`;
+  }
   return hero('لوحة الإدارة','سجل النشاط','راجع عمليات الدخول وتغييرات الحسابات والامتحانات.')+
     `<section class="card">${db.log.length?table(['الحدث','الوقت'],db.log.map(item=>[esc(item.label),fmt(item.at)])):'<p>لا توجد أحداث بعد.</p>'}</section>`;
+}
+function subjects() {
+  const item=db.subjects.find(subject=>subject.id===subjectEdit);
+  return hero('لوحة الإدارة','المواد','أدر أسماء المواد ورموزها.')+
+    `<section class="card"><form id="subject-form" data-id="${esc(item?.id)}"><div class="grid">
+      <label>اسم المادة<input name="name" required maxlength="80" value="${esc(item?.name)}"></label>
+      <label>رمز المادة<input dir="ltr" name="code" required maxlength="20" value="${esc(item?.code)}"></label></div>
+      <div class="actions"><button class="primary">${item?'حفظ التعديل':'إضافة مادة'}</button>${item?button('إلغاء التعديل','subject-edit'):''}</div></form></section>
+    <section class="card">${db.subjects.length?table(['المادة','الرمز','الإجراء'],db.subjects.map(subject=>[
+      esc(subject.name),`<bdi dir="ltr">${esc(subject.code)}</bdi>`,button('تعديل','subject-edit',subject.id)
+    ])):'<p>ما في مواد حاليًا.</p>'}</section>`;
 }
 function download(rows = [['الطالب','الامتحان','النسبة','النتيجة','وقت التسليم'],...db.results.map(r=>[studentName(r),r.title,r.percent,r.passed?'ناجح':'لم ينجح',new Date(r.at).toISOString()])]) {
   const cell = value => {
@@ -634,6 +680,9 @@ document.querySelector('#logout').addEventListener('click',()=>perform(async()=>
   directoryFilter={search:'',role:'all'};
   directoryPage=0;
   bankSearch='';
+  bankFilters={subject:'',topic:'',difficulty:''};
+  subjectEdit=undefined;
+  accountEdit=undefined;
   editingQuestionId=undefined;
   reschedulingExamId=undefined;
   account=undefined;
@@ -737,6 +786,25 @@ document.addEventListener('click',event=>{
         grade?.total ?? '',grade?.percent ?? '',grade?(grade.passed?'ناجح':'دون علامة النجاح'):'بانتظار التصحيح'])]);
   }
   if (action==='directory-page' && role==='admin') {directoryPage=Number(id);render();}
+  if (action==='subject-edit' && role==='admin') {subjectEdit=id;render();}
+  if (action==='platform-pass-rate' && role==='admin') perform(async()=>{
+    db.passRate=await firebase.platformPassRate(db.exams);
+    render();
+    toast(db.passRate.total?'تم حساب النسبة من المحاولات المسلّمة.':'ما في محاولات مسلّمة ومصحّحة.');
+  });
+  if (action==='delete-question' && role==='teacher' && confirm('حذف السؤال من بنك الأسئلة؟')) perform(async()=>{
+    await firebase.removeQuestion(id);
+    editingQuestionId=undefined;
+    await loadFirebaseAccount(account);
+    render();
+    toast('تم حذف السؤال من البنك.');
+  });
+  if (action==='cancel-exam' && role==='teacher' && confirm('إلغاء نشر الامتحان؟')) perform(async()=>{
+    await firebase.editExam(db.exams.find(exam=>exam.id===id),{cancelled:true});
+    await loadFirebaseAccount(account);
+    render();
+    toast('تم إلغاء النشر.');
+  });
   if (action==='start') perform(()=>start(id));
   if (action==='jump') {position=Number(id);render();}
   if (action==='review') perform(async()=>{
@@ -841,7 +909,44 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=15');
+        firebase ??= await import('./firebase-student.js?v=16');
+        const formId=event.target.dataset.id;
+        if (event.target.classList.contains('exam-settings') && role==='teacher') {
+          await firebase.editExam(db.exams.find(exam=>exam.id===formId),{title:values.title.trim(),duration:Number(values.duration),pass:Number(values.pass)});
+          await loadFirebaseAccount(account);
+          render();
+          toast('تم تعديل الامتحان.');
+          return;
+        }
+        if (event.target.classList.contains('extension-form') && role==='teacher') {
+          const exam=selectedRoster.exam;
+          await firebase.grantExtraTime(exam.id,formId,Number(values.minutes));
+          selectedRoster={exam,...await firebase.examRoster(exam,db.questions)};
+          render();
+          toast('تم حفظ الوقت الإضافي.');
+          return;
+        }
+        if (event.target.classList.contains('account-settings') && role==='admin') {
+          const name=values.name.trim();
+          if (!name) throw new Error('أدخل اسم الحساب.');
+          await firebase.updateAccount(event.target.dataset.role,formId,{name,disabled:form.has('disabled')});
+          accountEdit=formId;
+          await loadFirebaseAccount(account);
+          render();
+          toast('تم حفظ الحساب.');
+          return;
+        }
+        if (event.target.id==='subject-form' && role==='admin') {
+          const name=values.name.trim();
+          const code=values.code.trim().toUpperCase().replace(/\s+/g,' ');
+          if (!name || !/^[A-Z0-9][A-Z0-9 -]{0,19}$/.test(code)) throw new Error('أدخل اسم المادة ورمزًا مثل CYS 334.');
+          await firebase.saveSubject(formId,{name,code});
+          subjectEdit=undefined;
+          await loadFirebaseAccount(account);
+          render();
+          toast('تم حفظ المادة.');
+          return;
+        }
         if (event.target.id==='directory-filter' && role==='admin') {
           directoryFilter={search:values.search.trim().toLowerCase(),role:values.role};
           directoryPage=0;
@@ -850,6 +955,7 @@ document.addEventListener('submit',event=>{
         }
         if (event.target.id==='bank-search' && role==='teacher') {
           bankSearch=values.search.trim().toLowerCase();
+          bankFilters={subject:values.subject.trim().toLowerCase(),topic:values.topic.trim().toLowerCase(),difficulty:values.difficulty};
           render();
           return;
         }
@@ -930,7 +1036,7 @@ document.addEventListener('submit',event=>{
           return;
         }
         if (event.target.id==='create-teacher-form' && role==='admin') {
-          try {await firebase.createTeacher(values);}
+          try {await firebase.createTeacher(values,values.role);}
           catch (error) {
             if (error.code==='auth/email-already-in-use') throw new Error('هذا البريد مستخدم بالفعل. استخدم بريدًا جديدًا للمدرّس.');
             if (error.code==='permission-denied') throw new Error('تعذّر تفعيل هذا الحساب كمدرّس. إذا كان مسجّلًا كطالب أو مدير، استخدم بريدًا جديدًا.');
@@ -938,13 +1044,14 @@ document.addEventListener('submit',event=>{
           }
           await loadFirebaseAccount(account);
           navigate('people');
-          toast('تمت إضافة المدرّس.');
+          toast(values.role==='student'?'تمت إضافة الطالب وإرسال رابط التأكيد.':'تمت إضافة المدرّس.');
           return;
         }
         if (event.target.id==='question-form') {
           const id=event.target.dataset.id;
           const existing=db.questions.find(item=>item.id===id);
           const values=questionFromForm(form,existing);
+          Object.assign(values,{subject:form.get('subject').trim(),topic:form.get('topic').trim(),difficulty:form.get('difficulty')});
           if (id) await firebase.editQuestion(id,values);
           else await firebase.addQuestion(values);
           editingQuestionId=undefined;
@@ -1028,7 +1135,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=15');
+    firebase=await import('./firebase-student.js?v=16');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

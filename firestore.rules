@@ -3,7 +3,8 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function teacher() {
       return request.auth != null
-        && exists(/databases/$(database)/documents/teacherRoles/$(request.auth.uid));
+        && exists(/databases/$(database)/documents/teacherRoles/$(request.auth.uid))
+        && get(/databases/$(database)/documents/teacherRoles/$(request.auth.uid)).data.get('disabled', false) == false;
     }
     function admin() {
       return request.auth != null
@@ -59,6 +60,9 @@ service cloud.firestore {
           && request.resource.data.keys().size() == 0
           && getAfter(/databases/$(database)/documents/publishedExams/$(examId)).data.owner == request.auth.uid
           && id in getAfter(/databases/$(database)/documents/publishedExams/$(examId)).data.classIds;
+        allow delete: if teacher()
+          && getAfter(/databases/$(database)/documents/publishedExams/$(examId)).data.owner == request.auth.uid
+          && getAfter(/databases/$(database)/documents/publishedExams/$(examId)).data.cancelled == true;
       }
     }
     match /studentProfiles/{uid}/classes/{id} {
@@ -103,22 +107,52 @@ service cloud.firestore {
         && !exists(/databases/$(database)/documents/studentProfiles/$(uid))
         && !exists(/databases/$(database)/documents/adminRoles/$(uid));
       allow delete: if admin();
+      allow update: if admin() && validAccountEdit();
+    }
+    function validAccountEdit() {
+      let data = request.resource.data;
+      return data.diff(resource.data).affectedKeys().hasOnly(['name', 'disabled'])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.get('disabled', false) is bool;
+    }
+    match /subjects/{id} {
+      allow read, delete: if admin();
+      allow create, update: if admin()
+        && request.resource.data.keys().hasOnly(['name', 'code'])
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 80
+        && request.resource.data.code is string
+        && request.resource.data.code.matches('^[A-Z0-9][A-Z0-9 -]{0,19}$');
+    }
+    match /auditLog/{id} {
+      allow read: if admin();
+      allow create: if request.auth != null
+        && request.resource.data.keys().hasOnly(['actor', 'at', 'action', 'target'])
+        && request.resource.data.actor == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.target is string && request.resource.data.target.size() <= 100
+        && ((admin() && request.resource.data.action in ['account', 'subject'])
+          || (teacher() && request.resource.data.action in ['publish', 'schedule', 'exam', 'cancel']));
     }
     match /teacherBanks/{uid}/questions/{id} {
       function validQuestion() {
         let q = request.resource.data;
         return q.prompt is string && q.prompt.size() > 0 && q.prompt.size() <= 400
+          && q.get('subject', '') is string && q.get('subject', '').size() <= 80
+          && q.get('topic', '') is string && q.get('topic', '').size() <= 80
+          && q.get('difficulty', '') in ['', 'easy', 'medium', 'hard']
           && q.options is list && q.options.size() >= 2 && q.options.size() <= 10
           && q.correct is int && q.correct >= 0 && q.correct < q.options.size()
           && q.points is int && q.points >= 1 && q.points <= 100;
       }
       allow read: if teacher() && request.auth.uid == uid;
       allow create: if teacher() && request.auth.uid == uid && validQuestion()
-        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points']);
+        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points', 'subject', 'topic', 'difficulty']);
       allow update: if teacher() && request.auth.uid == uid && validQuestion()
-        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points', 'originalCorrect', 'originalPoints'])
+        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points', 'subject', 'topic', 'difficulty', 'originalCorrect', 'originalPoints'])
         && request.resource.data.originalCorrect == resource.data.get('originalCorrect', resource.data.correct)
         && request.resource.data.originalPoints == resource.data.get('originalPoints', resource.data.points);
+      allow delete: if teacher() && request.auth.uid == uid;
     }
     match /teacherBanks/{uid}/papers/{id} {
       allow get: if teacher() && request.auth.uid == uid;
@@ -147,19 +181,19 @@ service cloud.firestore {
       }
       allow list: if admin() || (teacher() && resource.data.owner == request.auth.uid);
       allow get: if admin() || (teacher() && resource.data.owner == request.auth.uid)
-        || (student(request.auth.uid) && (classAccess(resource.data) || hasAttempt(id)));
+        || (student(request.auth.uid) && ((!resource.data.get('cancelled', false) && classAccess(resource.data)) || hasAttempt(id)));
       allow create: if teacher() && validExam()
         && existsAfter(/databases/$(database)/documents/teacherBanks/$(request.auth.uid)/papers/$(id))
         && request.resource.data.ready == true
         && existsAfter(/databases/$(database)/documents/examContent/$(id));
       allow update: if teacher() && resource.data.owner == request.auth.uid
-        && request.resource.data.start is timestamp
+        && !resource.data.get('cancelled', false) && request.resource.data.start is timestamp
         && (
           (resource.data.get('ready', false) == false
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready', 'start'])
             && request.resource.data.ready == true
             && existsAfter(/databases/$(database)/documents/examContent/$(id)))
-          || (resource.data.get('ready', false) == true && !duringExam(resource.data)
+          || (resource.data.get('ready', false) == true && request.time < resource.data.start
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['start'])
             && request.resource.data.start > request.time)
         );
@@ -167,9 +201,17 @@ service cloud.firestore {
         && resource.data.get('classIds', []).size() == 0
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['classIds'])
         && ownsClassTargets(request.resource.data.classIds);
+      allow update: if teacher() && resource.data.owner == request.auth.uid
+        && request.time < resource.data.start && !resource.data.get('cancelled', false)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'duration', 'pass', 'cancelled'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3 && request.resource.data.title.size() <= 100
+        && request.resource.data.duration is int && request.resource.data.duration >= 1 && request.resource.data.duration <= 180
+        && request.resource.data.pass is int && request.resource.data.pass >= 0 && request.resource.data.pass <= 100
+        && request.resource.data.get('cancelled', false) is bool;
     }
     function duringExam(exam) {
-      return exam.get('ready', false) == true && request.time >= exam.start
+      return exam.get('ready', false) == true && !exam.get('cancelled', false) && request.time >= exam.start
         && request.time < exam.start + duration.value(exam.duration, 'm');
     }
     function verifiedUniversityEmail() {
@@ -178,15 +220,16 @@ service cloud.firestore {
         && request.auth.token.email.matches('(?i)^[^@ ]+@ses[.]yu[.]edu[.]jo$');
     }
     function student(uid) {
-      return verifiedUniversityEmail() && request.auth.uid == uid && !teacher() && !admin()
-        && exists(/databases/$(database)/documents/studentProfiles/$(uid));
+      return verifiedUniversityEmail() && request.auth.uid == uid
+        && !exists(/databases/$(database)/documents/teacherRoles/$(uid)) && !admin()
+        && get(/databases/$(database)/documents/studentProfiles/$(uid)).data.get('disabled', false) == false;
     }
     function ownsExam(id) {
       return teacher()
         && get(/databases/$(database)/documents/publishedExams/$(id)).data.owner == request.auth.uid;
     }
     match /examKeys/{id} {
-      allow get: if request.auth != null && (ownsExam(id)
+      allow get: if request.auth != null && (admin() || ownsExam(id)
         || (student(request.auth.uid)
           && get(/databases/$(database)/documents/studentProfiles/$(request.auth.uid)/attempts/$(id)).data.submittedAt is timestamp));
       allow create: if teacher()
@@ -196,11 +239,29 @@ service cloud.firestore {
         && request.resource.data.answers.size() == getAfter(/databases/$(database)/documents/publishedExams/$(id)).data.questionCount;
     }
     match /publishedExams/{id}/participants/{uid} {
-      allow read: if ownsExam(id) || (request.auth != null && request.auth.uid == uid);
+      allow read: if admin() || ownsExam(id) || (request.auth != null && request.auth.uid == uid);
       allow create: if student(uid)
         && existsAfter(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id))
         && request.resource.data.keys().hasOnly(['name'])
         && request.resource.data.name == get(/databases/$(database)/documents/studentProfiles/$(uid)).data.name;
+    }
+    function extraMinutes(id, uid) {
+      let path = /databases/$(database)/documents/publishedExams/$(id)/extensions/$(uid);
+      return exists(path) ? get(path).data.minutes : 0;
+    }
+    function duringStudentExam(exam, id, uid) {
+      return exam.ready == true && !exam.get('cancelled', false) && request.time >= exam.start
+        && request.time < exam.start + duration.value(exam.duration + extraMinutes(id, uid), 'm');
+    }
+    match /publishedExams/{id}/extensions/{uid} {
+      allow get: if ownsExam(id) || student(uid);
+      allow list: if ownsExam(id);
+      allow create, update: if ownsExam(id)
+        && exists(/databases/$(database)/documents/publishedExams/$(id)/participants/$(uid))
+        && get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data.submittedAt == null
+        && request.resource.data.keys().hasOnly(['minutes'])
+        && request.resource.data.minutes is int
+        && request.resource.data.minutes >= 1 && request.resource.data.minutes <= 120;
     }
     match /examContent/{id} {
       function exam() {
@@ -212,8 +273,8 @@ service cloud.firestore {
       allow get: if request.auth != null &&
         ((teacher() && exam().owner == request.auth.uid)
         || (student(request.auth.uid) && (
-          (duringExam(exam()) && (classAccess(exam()) || hasAttempt(id)))
-          || (request.time >= exam().start + duration.value(exam().duration, 'm')
+          (duringStudentExam(exam(), id, request.auth.uid) && (classAccess(exam()) || hasAttempt(id)))
+          || (request.time >= exam().start + duration.value(exam().duration + extraMinutes(id, request.auth.uid), 'm')
             && get(/databases/$(database)/documents/studentProfiles/$(request.auth.uid)/attempts/$(id)).data.submittedAt is timestamp)
         )));
       allow create: if teacher() && published().owner == request.auth.uid && published().ready == true
@@ -227,14 +288,14 @@ service cloud.firestore {
         return get(/databases/$(database)/documents/publishedExams/$(id)).data;
       }
       allow list: if student(uid);
-      allow get: if student(uid) || ownsExam(id);
+      allow get: if admin() || student(uid) || ownsExam(id);
       allow create: if student(uid) && duringExam(exam()) && classAccess(exam())
         && request.resource.data.keys().hasOnly(['startedAt','answers','review','submittedAt'])
         && request.resource.data.startedAt == request.time
         && request.resource.data.answers == {} && request.resource.data.review == {}
         && request.resource.data.submittedAt == null;
       allow update: if student(uid) && resource.data.submittedAt == null && (
-        (duringExam(exam()) && resource.data.startedAt >= exam().start
+        (duringStudentExam(exam(), id, uid) && resource.data.startedAt >= exam().start
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answers','review'])
           && request.resource.data.answers is map && request.resource.data.answers.size() <= exam().questionCount
           && request.resource.data.review is map && request.resource.data.review.size() <= exam().questionCount)
@@ -257,10 +318,20 @@ service cloud.firestore {
       allow get: if ownsProfile() || admin();
       allow list: if admin();
       allow create: if ownsProfile() && verifiedUniversityEmail() && !teacher() && !admin() && validProfile();
+      allow create: if admin()
+        && !exists(/databases/$(database)/documents/teacherRoles/$(uid))
+        && !exists(/databases/$(database)/documents/adminRoles/$(uid))
+        && request.resource.data.keys().hasOnly(['name', 'email', 'createdAt'])
+        && request.resource.data.name is string && request.resource.data.name.size() >= 1
+        && request.resource.data.name.size() <= 100
+        && request.resource.data.email is string
+        && request.resource.data.email.matches('(?i)^[^@ ]+@ses[.]yu[.]edu[.]jo$')
+        && request.resource.data.createdAt == request.time;
       allow update: if student(uid)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name'])
         && request.resource.data.name is string
         && request.resource.data.name.size() >= 1 && request.resource.data.name.size() <= 100;
+      allow update: if admin() && validAccountEdit();
     }
   }
 }

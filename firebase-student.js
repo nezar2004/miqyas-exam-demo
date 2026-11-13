@@ -42,7 +42,7 @@ export async function profile(portal='student') {
   if (!user) return null;
   if (portal==='teacher' || portal==='admin') {
     const assigned=await getDoc(doc(db,portal==='teacher'?'teacherRoles':'adminRoles',user.uid));
-    if (!assigned.exists()) return null;
+    if (!assigned.exists() || assigned.data().disabled) return null;
     return {id:user.uid,email:user.email,name:assigned.data().name || user.email,role:portal};
   }
   const teacherRole=await getDoc(doc(db,'teacherRoles',user.uid));
@@ -55,6 +55,7 @@ export async function profile(portal='student') {
   };
   const ref=doc(db,'studentProfiles',user.uid);
   const saved=await getDoc(ref);
+  if (saved.data()?.disabled) throw new Error('حسابك موقوف. تواصل مع إدارة مقياس.');
   if (!saved.exists() && user.displayName) return saveProfile(user.displayName);
   return {id:user.uid,email:user.email,name:saved.data()?.name,role:'student'};
 }
@@ -151,12 +152,48 @@ export async function loadPeople() {
   const assigned=new Set([...teacherAccounts,...adminAccounts].map(person=>person.id));
   const students=[...registered.values()].filter(person=>!assigned.has(person.id));
   const byName=(a,b)=>(a.name || '').localeCompare(b.name || '','ar');
-  return {students:students.sort(byName),teachers:teacherAccounts.sort(byName),admins:adminAccounts.sort(byName),classes:await loadClasses('admin')};
+  const [classes,subjects,log,exams]=await Promise.all([loadClasses('admin'),getDocs(collection(db,'subjects')),
+    getDocs(collection(db,'auditLog')),getDocs(collection(db,'publishedExams'))]);
+  const records=snap=>snap.docs.map(item=>({...item.data(),id:item.id}));
+  return {students:students.sort(byName),teachers:teacherAccounts.sort(byName),admins:adminAccounts.sort(byName),classes,
+    subjects:records(subjects),log:records(log).sort((a,b)=>b.at.toMillis()-a.at.toMillis()),
+    exams:records(exams).filter(exam=>!exam.cancelled)};
+}
+export async function platformPassRate(exams) {
+  const counts=await Promise.all(exams.map(async exam=>{
+    const [key,participants]=await Promise.all([getDoc(doc(db,'examKeys',exam.id)),
+      getDocs(collection(db,'publishedExams',exam.id,'participants'))]);
+    if (!key.exists()) return {passed:0,total:0};
+    const submissions=await Promise.all(participants.docs.map(person=>
+      getDoc(doc(db,'studentProfiles',person.id,'attempts',exam.id))));
+    const grades=submissions.filter(item=>item.data()?.submittedAt)
+      .map(item=>calculateGrade(key.data().answers,item.data().answers,exam.pass));
+    return {passed:grades.filter(grade=>grade.passed).length,total:grades.length};
+  }));
+  return counts.reduce((sum,item)=>({passed:sum.passed+item.passed,total:sum.total+item.total}),{passed:0,total:0});
 }
 
-export async function createTeacher({name,email,password}) {
+function audit(batch,action,target) {
+  batch.set(doc(collection(db,'auditLog')),{actor:auth.currentUser.uid,at:serverTimestamp(),action,target});
+}
+export async function updateAccount(role,id,fields) {
+  const batch=writeBatch(db);
+  batch.update(doc(db,role==='teacher'?'teacherRoles':'studentProfiles',id),fields);
+  audit(batch,'account',id);
+  await batch.commit();
+}
+export async function saveSubject(id,fields) {
+  const batch=writeBatch(db);
+  const ref=id?doc(db,'subjects',id):doc(collection(db,'subjects'));
+  batch.set(ref,fields);
+  audit(batch,'subject',ref.id);
+  await batch.commit();
+}
+
+export async function createTeacher({name,email,password},role='teacher') {
   const cleanName=name.trim();
   const cleanEmail=email.trim();
+  if (role==='student' && !universityEmail(cleanEmail)) throw new Error('استخدم البريد الجامعي للطالب.');
   if (!cleanName || cleanName.length>100 || password.length<12 || password.length>128) {
     throw new Error('أدخل اسم المدرّس وكلمة مرور بين 12 و128 حرفًا.');
   }
@@ -176,14 +213,18 @@ export async function createTeacher({name,email,password}) {
         throw error;
       }
     }
-    const ref=doc(db,'teacherRoles',credential.user.uid);
-    if ((await getDoc(ref)).exists()) throw new Error('هذا الحساب مضاف كمدرّس بالفعل.');
-    await setDoc(ref,{name:cleanName,email:credential.user.email});
+    const ref=doc(db,role==='student'?'studentProfiles':'teacherRoles',credential.user.uid);
+    if ((await getDoc(ref)).exists()) throw new Error('هذا الحساب مضاف بالفعل.');
+    if (role==='student' && !credential.user.emailVerified) await sendEmailVerification(credential.user);
+    const batch=writeBatch(db);
+    batch.set(ref,{name:cleanName,email:credential.user.email,...(role==='student'?{createdAt:serverTimestamp()}: {})});
+    audit(batch,'account',ref.id);
+    await batch.commit();
   } finally {
     await deleteApp(secondary);
   }
 }
-export function removeTeacher(id) {return deleteDoc(doc(db,'teacherRoles',id));}
+export function removeTeacher(id) {return updateAccount('teacher',id,{disabled:true});}
 
 function bank() {
   return collection(db,'teacherBanks',auth.currentUser.uid,'questions');
@@ -254,9 +295,11 @@ export async function loadExams(portal) {
     teacher?getDocs(query(collection(db,'publishedExams'),where('owner','==',uid))):null
   ]);
   const exams=teacher?ownedExams.docs:await studentExams(classes,attempts);
+  const extensions=teacher?[]:await Promise.all(attempts.docs.map(item=>getDoc(extensionRef(item.id,uid))));
   return {
     classes,
-    exams:exams.map(item=>({...item.data(),id:item.id,start:item.data().start.toDate().toISOString()}))
+    exams:exams.map(item=>({...item.data(),id:item.id,start:item.data().start.toDate().toISOString(),
+      extra:extensions.find(extension=>extension.ref.parent.parent.id===item.id)?.data()?.minutes || 0}))
       .sort((a,b)=>Date.parse(a.start)-Date.parse(b.start)),
     questions:questions?.docs.map(item=>({...item.data(),id:item.id})) || [],
     results:[],attempts:{},
@@ -276,6 +319,7 @@ export async function assignLegacyExam(id,classIds) {
 export async function addQuestion(question) {
   await addDoc(bank(),question);
 }
+export function removeQuestion(id) {return deleteDoc(doc(bank(),id));}
 export async function editQuestion(id, question) {
   const ref=doc(bank(),id);
   await runTransaction(db,async tx=>{
@@ -314,6 +358,7 @@ export async function publishExam({ids,shuffle,start,...metadata},bankQuestions)
   batch.set(doc(db,'teacherBanks',owner,'papers',exam.id),{ids,shuffle});
   batch.set(doc(db,'examContent',exam.id),{questions:examQuestions(ids,bankQuestions),shuffle});
   batch.set(doc(db,'examKeys',exam.id),{answers:answerKey(ids,bankQuestions)});
+  audit(batch,'publish',exam.id);
   await batch.commit();
 }
 
@@ -329,8 +374,24 @@ export async function enableExam(id,start,bankQuestions) {
   await batch.commit();
 }
 export function rescheduleExam(id,start) {
-  return updateDoc(doc(db,'publishedExams',id),{start:Timestamp.fromDate(start)});
+  const batch=writeBatch(db);
+  batch.update(doc(db,'publishedExams',id),{start:Timestamp.fromDate(start)});
+  audit(batch,'schedule',id);
+  return batch.commit();
 }
+export function editExam(exam,fields) {
+  const batch=writeBatch(db);
+  batch.update(doc(db,'publishedExams',exam.id),fields);
+  if (fields.cancelled) for (const id of exam.classIds || []) batch.delete(doc(db,'classes',id,'exams',exam.id));
+  audit(batch,fields.cancelled?'cancel':'exam',exam.id);
+  return batch.commit();
+}
+function extensionRef(id,uid) {return doc(db,'publishedExams',id,'extensions',uid);}
+export async function attemptDeadline(exam) {
+  const extension=await getDoc(extensionRef(exam.id,auth.currentUser.uid));
+  return Date.parse(exam.start)+(exam.duration+(extension.data()?.minutes || 0))*60000;
+}
+export function grantExtraTime(id,uid,minutes) {return setDoc(extensionRef(id,uid),{minutes});}
 export async function examDraft(exam) {
   const paper=await getDoc(doc(db,'teacherBanks',auth.currentUser.uid,'papers',exam.id));
   if (!paper.exists()) throw new Error('تعذّر العثور على أسئلة الامتحان.');
@@ -350,6 +411,7 @@ export async function syncParticipant(id,name) {
   });
 }
 export async function beginAttempt(exam,name) {
+  const deadline=await attemptDeadline(exam);
   const content=await getDoc(doc(db,'examContent',exam.id));
   if (!content.exists()) throw new Error('أسئلة الامتحان غير متاحة.');
   const {questions,shuffle}=content.data();
@@ -373,7 +435,7 @@ export async function beginAttempt(exam,name) {
     const orderKey=id=>Array.from(uid+id).reduce((hash,char)=>Math.imul(hash^char.charCodeAt(0),16777619),2166136261)>>>0;
     order.sort((a,b)=>orderKey(a)-orderKey(b) || a.localeCompare(b));
   }
-  return {questions,attempt:{...attempt,order,examId:exam.id,deadline:Date.parse(exam.start)+exam.duration*60000}};
+  return {questions,attempt:{...attempt,order,examId:exam.id,deadline}};
 }
 export function saveAttemptField(id,field,question,value) {
   return updateDoc(submissionRef(id),{[field+'.'+question]:value});
@@ -405,7 +467,7 @@ export async function studentGrade(exam,includeDetails=false) {
   const answers=attempt.data().answers;
   const correct=key.data().answers;
   const grade=calculateGrade(correct,answers,exam.pass);
-  if (!includeDetails || Date.now()<Date.parse(exam.start)+exam.duration*60000) return grade;
+  if (!includeDetails || Date.now()<await attemptDeadline(exam)) return grade;
   const content=await getDoc(doc(db,'examContent',exam.id));
   return {...grade,details:content.data()?.questions.map(question=>({
     prompt:question.prompt,
@@ -429,16 +491,18 @@ export async function examRoster(exam,bankQuestions) {
       else answers=existing.data().answers;
     });
   }
-  const [entries,content]=await Promise.all([
+  const [entries,content,extensions]=await Promise.all([
     getDocs(collection(db,'publishedExams',exam.id,'participants')),
-    getDoc(doc(db,'examContent',exam.id))
+    getDoc(doc(db,'examContent',exam.id)),getDocs(collection(db,'publishedExams',exam.id,'extensions'))
   ]);
-  const closed=Date.now()>=Date.parse(exam.start)+exam.duration*60000;
+  const extra=new Map(extensions.docs.map(item=>[item.id,item.data().minutes]));
   const roster=await Promise.all(entries.docs.map(async entry=>{
     const snapshot=await getDoc(doc(db,'studentProfiles',entry.id,'attempts',exam.id));
     const attempt=snapshot.data();
+    const minutes=extra.get(entry.id) || 0;
+    const closed=Date.now()>=Date.parse(exam.start)+(exam.duration+minutes)*60000;
     const submitted=Boolean(attempt?.submittedAt || (attempt && (closed || attempt.startedAt.toMillis()<Date.parse(exam.start))));
-    return {name:entry.data().name,submitted,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null,
+    return {id:entry.id,name:entry.data().name,minutes,submitted,canExtend:!!attempt && !attempt.submittedAt,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null,
       responses:submitted?attempt.answers:null};
   }));
   const prompts=new Map((content.data()?.questions || []).map(question=>[question.id,question.prompt]));
