@@ -306,9 +306,13 @@ export async function loadExams(portal) {
   ]);
   const exams=teacher?ownedExams.docs:await studentExams(classes,attempts);
   const extensions=teacher?[]:await Promise.all(attempts.docs.map(item=>getDoc(extensionRef(item.id,uid))));
+  const retries=teacher?[]:await Promise.all(exams.filter(item=>item.data().examClosesAt && item.data().maxAttempts>1)
+    .map(item=>getDoc(retryRef(item.id,uid))));
   return {
     classes,
     exams:exams.map(item=>({...item.data(),id:item.id,start:item.data().start.toDate().toISOString(),
+      closesAt:item.data().examClosesAt?.toMillis(),
+      retry:retries.find(retry=>retry.ref.parent.parent.id===item.id)?.data()?.number,
       extra:extensions.find(extension=>extension.ref.parent.parent.id===item.id)?.data()?.minutes || 0}))
       .sort((a,b)=>Date.parse(a.start)-Date.parse(b.start)),
     questions:questions?.docs.map(item=>({...item.data(),id:item.id})) || [],
@@ -359,11 +363,11 @@ function answerKey(ids,bankQuestions,original=false) {
     return [id,{correct,points}];
   }));
 }
-export async function publishExam({ids,shuffle,start,...metadata},bankQuestions) {
+export async function publishExam({ids,shuffle,start,closesAt,...metadata},bankQuestions) {
   const owner=auth.currentUser.uid;
   const exam=doc(collection(db,'publishedExams'));
   const batch=writeBatch(db);
-  batch.set(exam,{...metadata,owner,questionCount:ids.length,start:Timestamp.fromDate(new Date(start)),publishedAt:serverTimestamp(),ready:true});
+  batch.set(exam,{...metadata,owner,questionCount:ids.length,start:Timestamp.fromDate(new Date(start)),examClosesAt:Timestamp.fromDate(closesAt),publishedAt:serverTimestamp(),ready:true});
   linkExamToClasses(batch,exam.id,metadata.classIds);
   batch.set(doc(db,'teacherBanks',owner,'papers',exam.id),{ids,shuffle});
   batch.set(doc(db,'examContent',exam.id),{questions:examQuestions(ids,bankQuestions),shuffle});
@@ -397,9 +401,23 @@ export function editExam(exam,fields) {
   return batch.commit();
 }
 function extensionRef(id,uid) {return doc(db,'publishedExams',id,'extensions',uid);}
-export async function attemptDeadline(exam) {
+function retryRef(id,uid) {return doc(db,'publishedExams',id,'retries',uid);}
+function deadlineFor(exam,attempt,extra) {
+  const start=exam.closesAt?attempt?.startedAt?.toMillis() ?? Date.parse(exam.start):Date.parse(exam.start);
+  return Math.min(exam.closesAt ?? Infinity,start+(exam.duration+extra)*60000);
+}
+export async function attemptDeadline(exam,attempt) {
   const extension=await getDoc(extensionRef(exam.id,auth.currentUser.uid));
-  return Date.parse(exam.start)+(exam.duration+(extension.data()?.minutes || 0))*60000;
+  return deadlineFor(exam,attempt,extension.data()?.minutes || 0);
+}
+export function releaseResults(id) {
+  return updateDoc(doc(db,'publishedExams',id),{resultsReleased:true});
+}
+export function grantRetry(id,uid,number) {
+  const batch=writeBatch(db);
+  batch.set(retryRef(id,uid),{number});
+  audit(batch,'retry',id+'/'+uid);
+  return batch.commit();
 }
 export function grantExtraTime(id,uid,minutes) {return setDoc(extensionRef(id,uid),{minutes});}
 export async function examDraft(exam) {
@@ -421,20 +439,24 @@ export async function syncParticipant(id,name) {
   });
 }
 export async function beginAttempt(exam,name) {
-  const deadline=await attemptDeadline(exam);
+  const ref=submissionRef(exam.id);
+  const participant=participantRef(exam.id);
+  await runTransaction(db,async transaction=>{
+    const [snapshot,entry]=await Promise.all([transaction.get(ref),transaction.get(participant)]);
+    const previous=snapshot.data();
+    if (!entry.exists()) transaction.set(participant,{name});
+    const retry=previous?.submittedAt && exam.retry===(previous.number ?? 1)+1 && Date.now()<exam.closesAt;
+    if (previous && !retry) return;
+    const initial={startedAt:serverTimestamp(),answers:{},review:{},submittedAt:null};
+    if (retry) transaction.set(doc(ref,'history',String(previous.number ?? 1)),previous);
+    transaction.set(ref,retry?{...initial,number:exam.retry}:initial);
+  });
+  const attempt=(await getDoc(ref)).data();
+  if (attempt.submittedAt) return {questions:[],attempt};
+  const deadline=await attemptDeadline(exam,attempt);
   const content=await getDoc(doc(db,'examContent',exam.id));
   if (!content.exists()) throw new Error('أسئلة الامتحان غير متاحة.');
   const {questions,shuffle}=content.data();
-  const ref=submissionRef(exam.id);
-  const participant=participantRef(exam.id);
-  const attempt=await runTransaction(db,async transaction=>{
-    const [snapshot,entry]=await Promise.all([transaction.get(ref),transaction.get(participant)]);
-    if (!entry.exists()) transaction.set(participant,{name});
-    if (snapshot.exists()) return snapshot.data();
-    const initial={startedAt:serverTimestamp(),answers:{},review:{},submittedAt:null};
-    transaction.set(ref,initial);
-    return initial;
-  });
   if (attempt.startedAt?.toMillis?.()<Date.parse(exam.start)) {
     throw new Error('إجابات محاولتك السابقة محفوظة. ارجع للجدول لعرض العلامة.');
   }
@@ -474,7 +496,8 @@ export function calculateGrade(key,answers,pass) {
   return {earned,total,percent,passed:total>0 && earned*100>=pass*total};
 }
 export async function studentGrade(exam,includeDetails=false) {
-  if (Date.now()<await attemptDeadline(exam)) return null;
+  if (exam.resultMode==='manual' && !exam.resultsReleased) return null;
+  if (Date.now()<(exam.closesAt ?? await attemptDeadline(exam))) return null;
   const attempt=await getDoc(submissionRef(exam.id));
   if (!attempt.data()?.submittedAt) return null;
   const key=await getDoc(doc(db,'examKeys',exam.id));
@@ -506,19 +529,22 @@ export async function examRoster(exam,bankQuestions) {
       else answers=existing.data().answers;
     });
   }
-  const [entries,content,extensions]=await Promise.all([
+  const [entries,content,extensions,retries]=await Promise.all([
     getDocs(collection(db,'publishedExams',exam.id,'participants')),
-    getDoc(doc(db,'examContent',exam.id)),getDocs(collection(db,'publishedExams',exam.id,'extensions'))
+    getDoc(doc(db,'examContent',exam.id)),getDocs(collection(db,'publishedExams',exam.id,'extensions')),
+    getDocs(collection(db,'publishedExams',exam.id,'retries'))
   ]);
   const extra=new Map(extensions.docs.map(item=>[item.id,item.data().minutes]));
+  const retry=new Map(retries.docs.map(item=>[item.id,item.data().number]));
   const roster=await Promise.all(entries.docs.map(async entry=>{
     const ref=doc(db,'studentProfiles',entry.id,'attempts',exam.id);
     const [snapshot,tabEvents]=await Promise.all([getDoc(ref),getDocs(collection(ref,'tabEvents'))]);
     const attempt=snapshot.data();
     const minutes=extra.get(entry.id) || 0;
-    const closed=Date.now()>=Date.parse(exam.start)+(exam.duration+minutes)*60000;
+    const closed=Date.now()>=deadlineFor(exam,attempt,minutes);
     const submitted=Boolean(attempt?.submittedAt || (attempt && (closed || attempt.startedAt.toMillis()<Date.parse(exam.start))));
     return {id:entry.id,name:entry.data().name,minutes,submitted,canExtend:!!attempt && !attempt.submittedAt,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null,
+      nextAttempt:(attempt?.number ?? 1)+1,retry:retry.get(entry.id),canRetry:!!attempt?.submittedAt,
       responses:submitted?attempt.answers:null,
       tabExits:tabEvents.size,lastTabExit:Math.max(0,...tabEvents.docs.map(event=>event.data().at.toMillis()))};
   }));

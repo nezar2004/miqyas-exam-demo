@@ -150,8 +150,8 @@ service cloud.firestore {
         && request.resource.data.actor == request.auth.uid
         && request.resource.data.at == request.time
         && request.resource.data.target is string && request.resource.data.target.size() <= 100
-        && ((admin() && request.resource.data.action in ['account', 'subject'])
-          || (teacher() && request.resource.data.action in ['publish', 'schedule', 'exam', 'cancel']));
+          && ((admin() && request.resource.data.action in ['account', 'subject'])
+          || (teacher() && request.resource.data.action in ['publish', 'schedule', 'exam', 'cancel', 'retry']));
     }
     match /teacherBanks/{uid}/questions/{id} {
       function validQuestion() {
@@ -187,13 +187,16 @@ service cloud.firestore {
     match /publishedExams/{id} {
       function validExam() {
         let exam = request.resource.data;
-        return exam.keys().hasOnly(['owner', 'title', 'section', 'classIds', 'start', 'duration', 'pass', 'questionCount', 'publishedAt', 'ready'])
+        return exam.keys().hasOnly(['owner', 'title', 'section', 'classIds', 'start', 'duration', 'pass', 'questionCount', 'publishedAt', 'ready', 'examClosesAt', 'maxAttempts', 'resultMode'])
           && exam.owner == request.auth.uid
           && ownsClassTargets(exam.classIds)
           && matchesSection(exam)
           && exam.title is string && exam.title.size() >= 3 && exam.title.size() <= 100
           && exam.section is string && exam.section.size() > 0 && exam.section.size() <= 80
           && exam.start is timestamp
+          && exam.examClosesAt is timestamp && exam.examClosesAt > exam.start
+          && exam.maxAttempts is int && exam.maxAttempts >= 1 && exam.maxAttempts <= 5
+          && exam.resultMode in ['automatic', 'manual']
           && exam.duration is int && exam.duration >= 1 && exam.duration <= 180
           && exam.pass is int && exam.pass >= 0 && exam.pass <= 100
           && exam.questionCount is int && exam.questionCount >= 1 && exam.questionCount <= 100
@@ -208,6 +211,7 @@ service cloud.firestore {
         && existsAfter(/databases/$(database)/documents/examContent/$(id));
       allow update: if teacher() && resource.data.owner == request.auth.uid
         && !resource.data.get('cancelled', false) && request.resource.data.start is timestamp
+        && (!('examClosesAt' in resource.data) || request.resource.data.start < resource.data.examClosesAt)
         && (
           (resource.data.get('ready', false) == false
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ready', 'start'])
@@ -229,10 +233,14 @@ service cloud.firestore {
         && request.resource.data.duration is int && request.resource.data.duration >= 1 && request.resource.data.duration <= 180
         && request.resource.data.pass is int && request.resource.data.pass >= 0 && request.resource.data.pass <= 100
         && request.resource.data.get('cancelled', false) is bool;
+      allow update: if ownsExam(id) && resource.data.get('resultMode', 'automatic') == 'manual'
+        && request.time >= resource.data.examClosesAt && !resource.data.get('cancelled', false)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['resultsReleased'])
+        && request.resource.data.resultsReleased == true;
     }
     function duringExam(exam) {
       return exam.get('ready', false) == true && !exam.get('cancelled', false) && request.time >= exam.start
-        && request.time < exam.start + duration.value(exam.duration, 'm');
+        && request.time < exam.get('examClosesAt', exam.start + duration.value(exam.duration, 'm'));
     }
     function verifiedUniversityEmail() {
       return request.auth != null && request.auth.token.email_verified == true
@@ -252,7 +260,7 @@ service cloud.firestore {
       function canReadStudentKey(uid) {
         let exam = get(/databases/$(database)/documents/publishedExams/$(id)).data;
         return get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data.submittedAt is timestamp
-          && request.time >= exam.start + duration.value(exam.duration + extraMinutes(id, uid), 'm');
+          && resultsAvailable(exam, id, uid);
       }
       allow get: if request.auth != null && (admin() || ownsExam(id)
         || (student(request.auth.uid) && canReadStudentKey(request.auth.uid)));
@@ -273,9 +281,32 @@ service cloud.firestore {
       let path = /databases/$(database)/documents/publishedExams/$(id)/extensions/$(uid);
       return exists(path) ? get(path).data.minutes : 0;
     }
-    function duringStudentExam(exam, id, uid) {
+    function resultsAvailable(exam, id, uid) {
+      return request.time >= exam.get('examClosesAt', exam.start + duration.value(exam.duration + extraMinutes(id, uid), 'm'))
+        && (exam.get('resultMode', 'automatic') == 'automatic' || exam.get('resultsReleased', false));
+    }
+    function duringStudentExam(exam, id, uid, startedAt) {
+      let end = startedAt + duration.value(exam.duration + extraMinutes(id, uid), 'm');
       return exam.ready == true && !exam.get('cancelled', false) && request.time >= exam.start
-        && request.time < exam.start + duration.value(exam.duration + extraMinutes(id, uid), 'm');
+        && request.time < end && request.time < exam.get('examClosesAt', end);
+    }
+    function attemptStart(exam, id, uid) {
+      return 'examClosesAt' in exam
+        ? get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data.startedAt : exam.start;
+    }
+    match /publishedExams/{id}/retries/{uid} {
+      allow get: if ownsExam(id) || student(uid);
+      allow list: if ownsExam(id);
+      allow create, update: if ownsExam(id) && validRetry(id, uid);
+    }
+    function validRetry(id, uid) {
+      let exam = get(/databases/$(database)/documents/publishedExams/$(id)).data;
+      let attempt = get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data;
+      let next = attempt.get('number', 1) + 1;
+      return duringExam(exam) && 'examClosesAt' in exam && attempt.submittedAt is timestamp
+        && next <= exam.maxAttempts
+        && request.resource.data.keys().hasOnly(['number'])
+        && request.resource.data.number == next;
     }
     match /publishedExams/{id}/extensions/{uid} {
       allow get: if ownsExam(id) || student(uid);
@@ -297,8 +328,9 @@ service cloud.firestore {
       allow get: if request.auth != null &&
         ((teacher() && exam().owner == request.auth.uid)
         || (student(request.auth.uid) && (
-          (duringStudentExam(exam(), id, request.auth.uid) && (classAccess(exam()) || hasAttempt(id)))
-          || (request.time >= exam().start + duration.value(exam().duration + extraMinutes(id, request.auth.uid), 'm')
+          ((('examClosesAt' in exam() && hasAttempt(id)) || (!('examClosesAt' in exam()) && (classAccess(exam()) || hasAttempt(id))))
+            && duringStudentExam(exam(), id, request.auth.uid, attemptStart(exam(), id, request.auth.uid)))
+          || (resultsAvailable(exam(), id, request.auth.uid)
             && get(/databases/$(database)/documents/studentProfiles/$(request.auth.uid)/attempts/$(id)).data.submittedAt is timestamp)
         )));
       allow create: if teacher() && published().owner == request.auth.uid && published().ready == true
@@ -308,10 +340,20 @@ service cloud.firestore {
         && request.resource.data.shuffle is bool;
     }
     match /studentProfiles/{uid}/attempts/{id} {
+      match /history/{number} {
+        function activePath() {return /databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id);}
+        allow read: if student(uid) || ownsExam(id) || admin();
+        allow create: if student(uid)
+          && request.resource.data == get(activePath()).data
+          && number == string(get(activePath()).data.get('number', 1))
+          && getAfter(activePath()).data.number == get(activePath()).data.get('number', 1) + 1
+          && getAfter(activePath()).data.startedAt == request.time;
+      }
       match /tabEvents/{eventId} {
         allow list: if ownsExam(id);
         allow create: if student(uid)
-          && duringStudentExam(get(/databases/$(database)/documents/publishedExams/$(id)).data, id, uid)
+          && duringStudentExam(get(/databases/$(database)/documents/publishedExams/$(id)).data, id, uid,
+            attemptStart(get(/databases/$(database)/documents/publishedExams/$(id)).data, id, uid))
           && get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data.submittedAt == null
           && request.resource.data.keys().hasOnly(['at'])
           && eventId == string(int(request.time.toMillis() / 60000))
@@ -328,13 +370,23 @@ service cloud.firestore {
         && request.resource.data.answers == {} && request.resource.data.review == {}
         && request.resource.data.submittedAt == null;
       allow update: if student(uid) && resource.data.submittedAt == null && (
-        (duringStudentExam(exam(), id, uid) && resource.data.startedAt >= exam().start
+        (duringStudentExam(exam(), id, uid, 'examClosesAt' in exam() ? resource.data.startedAt : exam().start)
+          && resource.data.startedAt >= exam().start
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answers','review'])
           && request.resource.data.answers is map && request.resource.data.answers.size() <= exam().questionCount
           && request.resource.data.review is map && request.resource.data.review.size() <= exam().questionCount)
         || (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['submittedAt'])
           && request.resource.data.submittedAt == request.time)
       );
+      allow update: if student(uid) && resource.data.submittedAt is timestamp
+        && 'examClosesAt' in exam() && duringExam(exam()) && classAccess(exam())
+        && request.resource.data.keys().hasOnly(['number','startedAt','answers','review','submittedAt'])
+        && request.resource.data.number == resource.data.get('number', 1) + 1
+        && request.resource.data.number <= exam().maxAttempts
+        && request.resource.data.number == get(/databases/$(database)/documents/publishedExams/$(id)/retries/$(uid)).data.number
+        && getAfter(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)/history/$(string(resource.data.get('number', 1)))).data == resource.data
+        && request.resource.data.startedAt == request.time
+        && request.resource.data.answers == {} && request.resource.data.review == {} && request.resource.data.submittedAt == null;
     }
     // Student profiles contain only a name, the signed-in email, and a creation timestamp.
     match /studentProfiles/{uid} {

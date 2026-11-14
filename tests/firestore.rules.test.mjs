@@ -177,7 +177,7 @@ test('tab exits use one immutable document per minute', async () => {
 test('instructor publishes, student starts and submits, and score inputs unlock after closing', async () => {
   const staff = as(teacher);
   const batch = writeBatch(staff);
-  batch.set(doc(staff,'publishedExams/workflow'),exam(-1));
+  batch.set(doc(staff,'publishedExams/workflow'),{...exam(-1),examClosesAt:timestamp(10),maxAttempts:2,resultMode:'manual'});
   batch.set(doc(staff,'teacherBanks/'+teacher+'/papers/workflow'),{ids:['q'],shuffle:false});
   batch.set(doc(staff,'examContent/workflow'),content);
   batch.set(doc(staff,'examKeys/workflow'),key);
@@ -185,20 +185,32 @@ test('instructor publishes, student starts and submits, and score inputs unlock 
   await assertSucceeds(batch.commit());
 
   const db = as(student);
-  await assertSucceeds(getDocFromServer(doc(db,'examContent/workflow')));
+  await assertFails(getDocFromServer(doc(db,'examContent/workflow')));
   const attempt = doc(db,attemptPath(student,'workflow'));
   const start = writeBatch(db);
   start.set(attempt,blankAttempt());
   start.set(doc(db,'publishedExams/workflow/participants/'+student),{name:'Student'});
   await assertSucceeds(start.commit());
+  await assertSucceeds(getDocFromServer(doc(db,'examContent/workflow')));
   await assertSucceeds(updateDoc(attempt,{'answers.q':0}));
   await assertSucceeds(updateDoc(attempt,{submittedAt:serverTimestamp()}));
   const answerKey = doc(db,'examKeys/workflow');
   await assertFails(getDocFromServer(answerKey));
+  const retry=doc(staff,'publishedExams/workflow/retries/'+student);
+  await assertSucceeds(setDoc(retry,{number:2}));
+  const restart=writeBatch(db);
+  restart.set(doc(attempt,'history','1'),(await getDocFromServer(attempt)).data());
+  restart.set(attempt,{...blankAttempt(),number:2});
+  await assertSucceeds(restart.commit());
+  await assertSucceeds(updateDoc(attempt,{'answers.q':0}));
+  await assertSucceeds(updateDoc(attempt,{submittedAt:serverTimestamp()}));
+  await assertFails(setDoc(retry,{number:3}));
 
   // Move only the fixture's start time so the test does not wait five minutes.
   await env.withSecurityRulesDisabled(context =>
-    updateDoc(doc(context.firestore(),'publishedExams/workflow'),{start:timestamp(-10)}));
+    updateDoc(doc(context.firestore(),'publishedExams/workflow'),{start:timestamp(-10),examClosesAt:timestamp(-1)}));
+  await assertFails(getDocFromServer(answerKey));
+  await assertSucceeds(updateDoc(doc(staff,'publishedExams/workflow'),{resultsReleased:true}));
   const answers = (await assertSucceeds(getDocFromServer(attempt))).data().answers;
   const expected = (await assertSucceeds(getDocFromServer(answerKey))).data().answers;
   assert.equal(answers.q === expected.q.correct ? expected.q.points : 0,2);
