@@ -242,7 +242,8 @@ async function loadClasses(portal) {
   const snapshots=await getDocs(portal==='teacher'?query(classes,where('owner','==',uid)):classes);
   return Promise.all(snapshots.docs.map(async item=>{
     const [members,invites]=await Promise.all([getDocs(collection(item.ref,'members')),getDocs(collection(item.ref,'invites'))]);
-    return {...item.data(),id:item.id,invite:invites.docs[0]?.id,members:members.docs.map(member=>member.data().name)};
+    return {...item.data(),id:item.id,invites:invites.docs.map(invite=>({id:invite.id,...invite.data()})),
+      members:members.docs.map(member=>({id:member.id,name:member.data().name}))};
   }));
 }
 
@@ -258,8 +259,20 @@ export async function saveClass(id,{name,subject,owner}) {
     await batch.commit();
   }
 }
-export function createClassInvite(id) {
-  return addDoc(collection(db,'classes',id,'invites'),{});
+export function createClassInvite(id,expiresAt) {
+  return addDoc(collection(db,'classes',id,'invites'),expiresAt?{expiresAt:Timestamp.fromDate(expiresAt)}:{});
+}
+export function revokeClassInvite(id,code) {
+  return deleteDoc(doc(db,'classes',id,'invites',code));
+}
+export function archiveClass(id) {
+  return updateDoc(doc(db,'classes',id),{archived:true});
+}
+export function removeClassMember(id,uid=auth.currentUser.uid) {
+  const batch=writeBatch(db);
+  batch.delete(doc(db,'classes',id,'members',uid));
+  batch.delete(doc(db,'studentProfiles',uid,'classes',id));
+  return batch.commit();
 }
 
 export async function joinClass(code,name) {
@@ -310,9 +323,9 @@ function linkExamToClasses(batch,id,classIds) {
   for (const classId of classIds) batch.set(doc(db,'classes',classId,'exams',id),{});
 }
 
-export async function assignLegacyExam(id,classIds) {
+export async function assignLegacyExam(id,classIds,section) {
   const batch=writeBatch(db);
-  batch.update(doc(db,'publishedExams',id),{classIds});
+  batch.update(doc(db,'publishedExams',id),{classIds,section});
   linkExamToClasses(batch,id,classIds);
   await batch.commit();
 }
@@ -441,7 +454,8 @@ export function saveAttemptField(id,field,question,value) {
   return updateDoc(submissionRef(id),{[field+'.'+question]:value});
 }
 export function recordTabExit(id) {
-  return addDoc(collection(submissionRef(id),'tabEvents'),{at:serverTimestamp()});
+  const minute=String(Math.floor(Date.now()/60000));
+  return setDoc(doc(submissionRef(id),'tabEvents',minute),{at:serverTimestamp()});
 }
 export function submitAttempt(id) {
   const ref=submissionRef(id);

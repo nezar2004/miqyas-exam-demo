@@ -106,14 +106,15 @@ function examClassLabels(exam) {
   const classes=(exam.classIds || []).map(id=>db.classes.find(group=>group.id===id)).filter(Boolean);
   return classes.length?classes.map(group=>`<span class="badge">${classTitle(group)}</span>`).join(' '):`<span class="badge">${esc(exam.section)}</span>`;
 }
+function activeClasses() {return db.classes.filter(group=>!group.archived);}
 function classChoices(selected=[]) {
-  return `<fieldset><legend>الشُعب المستهدفة (من شعبة إلى 3)</legend>${db.classes.map(group=>
+  return `<fieldset><legend>الشُعب المستهدفة (من شعبة إلى 3)</legend>${activeClasses().map(group=>
     `<label class="choice"><input type="checkbox" name="classIds" value="${esc(group.id)}" ${selected.includes(group.id)?'checked':''}><span>${classTitle(group)}</span></label>`
   ).join('')}</fieldset>`;
 }
 function selectedClasses(form) {
   const ids=form.getAll('classIds');
-  if (!ids.length || ids.length>3 || !ids.every(id=>db.classes.some(group=>group.id===id))) {
+  if (!ids.length || ids.length>3 || !ids.every(id=>activeClasses().some(group=>group.id===id))) {
     throw new Error('اختر من شعبة إلى 3 شُعب.');
   }
   return ids;
@@ -136,9 +137,16 @@ function classes() {
       `<section class="card"><h2>إضافة شعبة</h2><form class="class-form">${classFields()}${teacherOptions}<div><button class="primary">إنشاء شعبة</button></div></form></section>`)
     + (db.classes.length?db.classes.map(group=>`<section class="card"><h2 class="class-title">${classTitle(group)}</h2>
       ${role==='admin'?`<p>المدرّس: ${esc(db.teachers.find(teacher=>teacher.id===group.owner)?.name || 'حساب غير متاح')}</p>`:''}
-      ${student?'':`${group.invite?`<p>رمز الانضمام <code dir="ltr" style="overflow-wrap:anywhere">${esc(group.id+'-'+group.invite)}</code></p>`:button('إنشاء رمز انضمام','class-invite',group.id)}
+      ${group.archived?'<span class="badge">شعبة مؤرشفة</span>':''}
+      ${student?button('مغادرة الشعبة','leave-class',group.id):`
+      ${group.invites.map(invite=>`<p>رمز الانضمام <code dir="ltr" style="overflow-wrap:anywhere">${esc(group.id+'-'+invite.id)}</code>
+        ${invite.expiresAt?`<small>انتهاء صلاحية الرمز <bdi>${fmt(invite.expiresAt.toDate())}</bdi></small>`:''}
+        ${button('إلغاء الرمز','revoke-invite',group.id+'/'+invite.id)}</p>`).join('')}
+      ${group.archived?'':`<form class="class-invite-form" data-id="${esc(group.id)}">
+        <label>انتهاء صلاحية الرمز (اختياري)<input name="expiresAt" type="datetime-local"></label>
+        <div><button>رمز جديد</button></div></form>${button('أرشفة الشعبة','archive-class',group.id)}`}
       <details><summary>الطلاب المسجّلون (${num(group.members.length)})</summary>${group.members.length?
-        `<ul>${group.members.map(name=>`<li>${esc(name)}</li>`).join('')}</ul>`:'<p>لسه ما انضم أي طالب.</p>'}</details>
+        `<ul>${group.members.map(member=>`<li>${esc(member.name)} ${button('إزالة الطالب','remove-class-member',group.id+'/'+member.id)}</li>`).join('')}</ul>`:'<p>لسه ما انضم أي طالب.</p>'}</details>
       <details><summary>تعديل الشعبة</summary><form class="class-form" data-id="${esc(group.id)}">${classFields(group)}
       <div><button>حفظ التعديل</button></div></form></details>`}</section>`).join(''):'<p class="card">ما في شُعب حاليًا.</p>');
 }
@@ -367,7 +375,7 @@ function exams() {
 }
 function teacherExamActions(exam) {
   if (exam.cancelled) return '<span class="badge warn">أُلغي النشر</span>'+button('نسخ الامتحان','copy-exam',exam.id);
-  if (!exam.classIds?.length) return db.classes.length?
+  if (!exam.classIds?.length) return activeClasses().length?
     `<details><summary>ربط الامتحان بالشُعب</summary><form class="assign-exam-form" data-id="${esc(exam.id)}">${classChoices()}
     <div><button class="primary">حفظ الشُعب</button></div></form></details>`:
     button('أنشئ شعبة لربط الامتحان','page','classes');
@@ -502,7 +510,7 @@ function bank() {
 }
 function create() {
   const draft=firebasePortal?copiedExam:undefined;
-  if (firebasePortal && !db.classes.length) return hero('أدوات المدرّس','إنشاء امتحان','أنشئ شعبة حتى تقدر تحدد مين يقدّم الامتحان.')+`<div class="card">${button('الانتقال إلى الشُعب','page','classes',true)}</div>`;
+  if (firebasePortal && !activeClasses().length) return hero('أدوات المدرّس','إنشاء امتحان','أنشئ شعبة حتى تقدر تحدد مين يقدّم الامتحان.')+`<div class="card">${button('الانتقال إلى الشُعب','page','classes',true)}</div>`;
   if (firebasePortal && !db.questions.length) return hero('أدوات المدرّس','إنشاء امتحان','أضف سؤالًا واحدًا على الأقل لبنك الأسئلة حتى تقدر تنشر امتحان.')+`<div class="card">${button('الانتقال إلى بنك الأسئلة','page','bank',true)}</div>`;
   return hero('أدوات المدرّس','إنشاء امتحان','حدّد قواعد الامتحان واختر الأسئلة من البنك.') +
     `<section class="card"><form id="exam-form"><label>اسم الامتحان<input name="title" required minlength="3" maxlength="100" value="${esc(draft?.title)}"></label>
@@ -800,12 +808,20 @@ document.addEventListener('click',event=>{
   const {action,id}=target.dataset;
   toast('');
   if (action==='refresh-exams') perform(async()=>{await loadFirebaseAccount(account);render();});
-  if (action==='class-invite' && firebasePortal && ['teacher','admin'].includes(role)) perform(async()=>{
-    await firebase.createClassInvite(id);
-    await loadFirebaseAccount(account);
-    render();
-    toast('تم إنشاء رمز الانضمام.');
-  });
+  const staff=role==='teacher' || role==='admin';
+  if (firebasePortal && page==='classes') {
+    const [groupId,memberOrCode]=(id || '').split('/');
+    const change=action==='revoke-invite' && staff?['إلغاء رمز الانضمام؟',()=>firebase.revokeClassInvite(groupId,memberOrCode)]:
+      action==='remove-class-member' && staff?['إزالة الطالب من الشعبة؟',()=>firebase.removeClassMember(groupId,memberOrCode)]:
+      action==='leave-class' && role==='student'?['مغادرة الشعبة؟',()=>firebase.removeClassMember(groupId)]:
+      action==='archive-class' && staff?['أرشفة الشعبة؟',()=>firebase.archiveClass(groupId)]:null;
+    if (change && confirm(t(change[0]))) perform(async()=>{
+      await change[1]();
+      await loadFirebaseAccount(account);
+      render();
+      toast('تم حفظ التغيير.');
+    });
+  }
   if (action==='remove-teacher' && firebasePortal && role==='admin') {
     const person=db.teachers.find(item=>item.id===id);
     if (person && confirm(t('إلغاء صلاحية المدرّس عن')+' '+person.name+(miqyasLocale.english?'?':'؟'))) {
@@ -926,10 +942,16 @@ async function flushAnswer() {
     }
   }
 }
+const lastTabExitMinute=new Map();
 document.addEventListener('visibilitychange',()=>{
   if (!firebasePortal || role!=='student' || page!=='attempt' || !document.hidden) return;
   const attempt=db?.attempts[active];
-  if (attempt && Date.now()<attempt.deadline) firebase.recordTabExit(active).catch(()=>{});
+  const now=Date.now();
+  const minute=Math.floor(now/60000);
+  if (attempt && now<attempt.deadline && lastTabExitMinute.get(active)!==minute) {
+    lastTabExitMinute.set(active,minute);
+    firebase.recordTabExit(active).catch(()=>{});
+  }
 });
 document.addEventListener('keydown',event=>{
   if (event.key==='Escape' && menuToggle.getAttribute('aria-expanded')==='true') {
@@ -1000,7 +1022,16 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=18');
+        firebase ??= await import('./firebase-student.js?v=19');
+        if (event.target.classList.contains('class-invite-form') && ['admin','teacher'].includes(role)) {
+          const expiry=values.expiresAt?new Date(values.expiresAt):null;
+          if (expiry && !(+expiry>Date.now())) throw new Error('اختَر تاريخ انتهاء بالمستقبل.');
+          await firebase.createClassInvite(event.target.dataset.id,expiry);
+          await loadFirebaseAccount(account);
+          render();
+          toast('تم إنشاء رمز الانضمام.');
+          return;
+        }
         const formId=event.target.dataset.id;
         if (event.target.classList.contains('exam-settings') && role==='teacher') {
           await firebase.editExam(db.exams.find(exam=>exam.id===formId),{title:values.title.trim(),duration:Number(values.duration),pass:Number(values.pass)});
@@ -1089,7 +1120,8 @@ document.addEventListener('submit',event=>{
           return;
         }
         if (event.target.classList.contains('assign-exam-form') && role==='teacher') {
-          await firebase.assignLegacyExam(event.target.dataset.id,selectedClasses(form));
+          const ids=selectedClasses(form);
+          await firebase.assignLegacyExam(event.target.dataset.id,ids,db.classes.find(group=>group.id===ids[0]).name);
           await loadFirebaseAccount(account);
           render();
           toast('تم ربط الامتحان بالشُعب.');
@@ -1226,7 +1258,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=18');
+    firebase=await import('./firebase-student.js?v=19');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

@@ -10,7 +10,7 @@ service cloud.firestore {
       return request.auth != null
         && exists(/databases/$(database)/documents/adminRoles/$(request.auth.uid));
     }
-    // A random class ID doubles as its join code. Membership is indexed by class and student.
+    // Membership is stored in two documents that are created and removed together.
     function classOwner(id) {
       return get(/databases/$(database)/documents/classes/$(id)).data.owner;
     }
@@ -21,7 +21,8 @@ service cloud.firestore {
       return exists(/databases/$(database)/documents/classes/$(id)/members/$(request.auth.uid));
     }
     function validClass(data) {
-      return data.keys().hasOnly(['owner', 'name', 'subject'])
+      return data.keys().hasOnly(['owner', 'name', 'subject', 'archived'])
+        && data.get('archived', false) is bool
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
         && data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 80;
     }
@@ -30,6 +31,7 @@ service cloud.firestore {
         || (student(request.auth.uid) && enrolled(id));
       allow list: if admin() || (teacher() && resource.data.owner == request.auth.uid);
       allow create: if (admin() || teacher()) && validClass(request.resource.data)
+        && !request.resource.data.get('archived', false)
         && request.resource.data.owner is string
         && (request.resource.data.owner == request.auth.uid && teacher()
           || admin() && exists(/databases/$(database)/documents/teacherRoles/$(request.resource.data.owner)));
@@ -37,22 +39,32 @@ service cloud.firestore {
         && request.resource.data.owner == resource.data.owner;
       match /invites/{code} {
         allow list: if managesClass(id);
+        allow delete: if managesClass(id);
         allow create: if (admin() || (teacher()
           && getAfter(/databases/$(database)/documents/classes/$(id)).data.owner == request.auth.uid))
-          && request.resource.data.keys().size() == 0
+          && !getAfter(/databases/$(database)/documents/classes/$(id)).data.get('archived', false)
+          && request.resource.data.keys().hasOnly(['expiresAt'])
+          && (!('expiresAt' in request.resource.data)
+            || (request.resource.data.expiresAt is timestamp && request.resource.data.expiresAt > request.time))
           && code.matches('^[A-Za-z0-9]{20}$');
       }
       match /members/{uid} {
+        function validInvite(code) {
+          let path = /databases/$(database)/documents/classes/$(id)/invites/$(code);
+          return existsAfter(path) && getAfter(path).data.get('expiresAt', request.time + duration.value(1, 's')) > request.time;
+        }
         allow list: if managesClass(id);
         allow get: if managesClass(id) || student(uid);
         allow create: if student(uid)
-          && exists(/databases/$(database)/documents/classes/$(id))
+          && !getAfter(/databases/$(database)/documents/classes/$(id)).data.get('archived', false)
           && request.resource.data.keys().hasOnly(['name', 'code'])
           && request.resource.data.name == get(/databases/$(database)/documents/studentProfiles/$(uid)).data.name
           && request.resource.data.code is string
           && request.resource.data.code.matches('^[A-Za-z0-9]{20}$')
-          && exists(/databases/$(database)/documents/classes/$(id)/invites/$(request.resource.data.code))
+          && validInvite(request.resource.data.code)
           && existsAfter(/databases/$(database)/documents/studentProfiles/$(uid)/classes/$(id));
+        allow delete: if (managesClass(id) || student(uid))
+          && !existsAfter(/databases/$(database)/documents/studentProfiles/$(uid)/classes/$(id));
       }
       match /exams/{examId} {
         allow list: if managesClass(id) || (student(request.auth.uid) && enrolled(id));
@@ -69,6 +81,8 @@ service cloud.firestore {
       allow read: if student(uid);
       allow create: if student(uid) && request.resource.data.keys().size() == 0
         && existsAfter(/databases/$(database)/documents/classes/$(id)/members/$(uid));
+      allow delete: if (managesClass(id) || student(uid))
+        && !existsAfter(/databases/$(database)/documents/classes/$(id)/members/$(uid));
     }
     function classAccess(exam) {
       let ids = exam.get('classIds', []);
@@ -84,7 +98,12 @@ service cloud.firestore {
         && (ids.size() < 3 || ownsClassTarget(ids[2]));
     }
     function ownsClassTarget(id) {
-      return id is string && id.matches('^[A-Za-z0-9]{20}$') && classOwner(id) == request.auth.uid;
+      return id is string && id.matches('^[A-Za-z0-9]{20}$') && classOwner(id) == request.auth.uid
+        && !get(/databases/$(database)/documents/classes/$(id)).data.get('archived', false);
+    }
+    function matchesSection(exam) {
+      let id = exam.classIds[0];
+      return exam.section == get(/databases/$(database)/documents/classes/$(id)).data.name;
     }
     function hasAttempt(id) {
       return exists(/databases/$(database)/documents/studentProfiles/$(request.auth.uid)/attempts/$(id));
@@ -171,6 +190,7 @@ service cloud.firestore {
         return exam.keys().hasOnly(['owner', 'title', 'section', 'classIds', 'start', 'duration', 'pass', 'questionCount', 'publishedAt', 'ready'])
           && exam.owner == request.auth.uid
           && ownsClassTargets(exam.classIds)
+          && matchesSection(exam)
           && exam.title is string && exam.title.size() >= 3 && exam.title.size() <= 100
           && exam.section is string && exam.section.size() > 0 && exam.section.size() <= 80
           && exam.start is timestamp
@@ -199,8 +219,8 @@ service cloud.firestore {
         );
       allow update: if teacher() && resource.data.owner == request.auth.uid
         && resource.data.get('classIds', []).size() == 0
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['classIds'])
-        && ownsClassTargets(request.resource.data.classIds);
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['classIds', 'section'])
+        && ownsClassTargets(request.resource.data.classIds) && matchesSection(request.resource.data);
       allow update: if teacher() && resource.data.owner == request.auth.uid
         && request.time < resource.data.start && !resource.data.get('cancelled', false)
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'duration', 'pass', 'cancelled'])
@@ -294,6 +314,7 @@ service cloud.firestore {
           && duringStudentExam(get(/databases/$(database)/documents/publishedExams/$(id)).data, id, uid)
           && get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data.submittedAt == null
           && request.resource.data.keys().hasOnly(['at'])
+          && eventId == string(int(request.time.toMillis() / 60000))
           && request.resource.data.at == request.time;
       }
       function exam() {

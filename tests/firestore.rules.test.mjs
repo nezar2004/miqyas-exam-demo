@@ -46,7 +46,7 @@ beforeEach(async () => {
   await seed([
     ['teacherRoles/'+teacher,{name:'Instructor',email:'teacher@example.test'}],
     ['studentProfiles/'+student,{name:'Student',email:email(student),createdAt:timestamp(-60)}],
-    ...sections.map(id => ['classes/'+id,{owner:teacher,name:id,subject:'Sample'}]),
+    ...sections.map(id => ['classes/'+id,{owner:teacher,name:id===sections[0]?'Sample section':id,subject:'Sample'}]),
     ['classes/'+sections[0]+'/members/'+student,{name:'Student'}]
   ]);
 });
@@ -128,6 +128,50 @@ test('disabled student and instructor lose exam and question bank access', async
   await assertFails(getDocFromServer(doc(as(student),'examContent/active')));
   await assertFails(setDoc(doc(as(student),attemptPath(student,'active')),blankAttempt()));
   await assertFails(getDocFromServer(doc(as(teacher),'teacherBanks/'+teacher+'/questions/q')));
+});
+
+test('only a current invite permits joining, and memberships are removed together', async () => {
+  const section=sections[1];
+  const member='classes/'+section+'/members/'+student;
+  const membership='studentProfiles/'+student+'/classes/'+section;
+  const code='Invite00000000000001';
+  const invite='classes/'+section+'/invites/'+code;
+  const db=as(student);
+  const staff=as(teacher);
+  const join=()=>{
+    const batch=writeBatch(db);
+    batch.set(doc(db,member),{name:'Student',code});
+    batch.set(doc(db,membership),{});
+    return batch.commit();
+  };
+  await seed([[invite,{expiresAt:timestamp(-1)}]]);
+  await assertFails(join());
+  await assertSucceeds(deleteDoc(doc(staff,invite)));
+  await assertFails(join());
+  await assertSucceeds(setDoc(doc(staff,invite),{expiresAt:timestamp(10)}));
+  await assertSucceeds(join());
+  await assertFails(deleteDoc(doc(db,membership)));
+  const leave=writeBatch(db);
+  leave.delete(doc(db,membership));
+  leave.delete(doc(db,member));
+  await assertSucceeds(leave.commit());
+  await assertSucceeds(join());
+  const removal=writeBatch(staff);
+  removal.delete(doc(staff,member));
+  removal.delete(doc(staff,membership));
+  await assertSucceeds(removal.commit());
+  await assertSucceeds(updateDoc(doc(staff,'classes/'+section),{archived:true}));
+  await assertFails(join());
+});
+
+test('tab exits use one immutable document per minute', async () => {
+  const path=attemptPath(student,'active');
+  await seed([['publishedExams/active',exam(-1)],[path,{...blankAttempt(),startedAt:timestamp(-0.5)}]]);
+  const db=as(student);
+  await assertFails(setDoc(doc(db,path+'/tabEvents/arbitrary'),{at:serverTimestamp()}));
+  const event=doc(db,path+'/tabEvents/'+Math.floor(Date.now()/60000));
+  await assertSucceeds(setDoc(event,{at:serverTimestamp()}));
+  await assertFails(setDoc(event,{at:serverTimestamp()}));
 });
 
 test('instructor publishes, student starts and submits, and score inputs unlock after closing', async () => {

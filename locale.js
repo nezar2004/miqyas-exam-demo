@@ -1,5 +1,18 @@
 const miqyasLocale = (() => {
   const translations = {
+  "شعبة مؤرشفة": "Archived section",
+  "مغادرة الشعبة": "Leave section",
+  "مغادرة الشعبة؟": "Leave this section?",
+  "انتهاء صلاحية الرمز": "Code expiry",
+  "إلغاء الرمز": "Revoke code",
+  "رمز جديد": "New code",
+  "أرشفة الشعبة": "Archive section",
+  "أرشفة الشعبة؟": "Archive this section?",
+  "إزالة الطالب": "Remove student",
+  "إزالة الطالب من الشعبة؟": "Remove this student from the section?",
+  "إلغاء رمز الانضمام؟": "Revoke this join code?",
+  "تم حفظ التغيير": "Change saved",
+  "اختَر تاريخ انتهاء بالمستقبل": "Choose a future expiry date",
   "علامتك رح تظهر بعد انتهاء وقت الامتحان": "Your score will appear after the exam ends",
   "سهل": "Easy",
   "متوسط": "Medium",
