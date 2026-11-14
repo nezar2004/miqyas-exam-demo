@@ -187,3 +187,19 @@ th{background:#f1f6f2}
   .sidebar nav{display:grid}
   .sidebar nav button{width:100%!important}
 }
+
+@media (max-width: 700px) {
+  main { padding-inline: clamp(12px, 4vw, 22px); }
+  .sidebar { grid-template-columns: minmax(0, 1fr) auto; }
+  .top, .public-head, .public-footer { flex-wrap: wrap; }
+  .top > div, .row > *, .actions > * { min-width: 0; overflow-wrap: anywhere; }
+  .card, .login-panel { padding: clamp(12px, 4vw, 22px); }
+  fieldset { padding: 10px; }
+  .choice input { flex: none; }
+  .choice, .answer-option, .identity, #notice { overflow-wrap: anywhere; }
+  .table { max-width: 100%; overscroll-behavior-inline: contain; }
+  .table th, .table td { white-space: normal; min-width: 5rem; overflow-wrap: anywhere; }
+}
+@media (max-width: 380px) {
+  .class-fields { grid-template-columns: minmax(0, 1fr); }
+}
