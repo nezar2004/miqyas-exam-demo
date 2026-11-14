@@ -1,5 +1,8 @@
 const miqyasLocale = (() => {
   const translations = {
+  "الأعداد تخص السجلات المحمّلة": "Counts reflect the loaded records",
+  "تحميل المزيد": "Load more",
+  "حساب نسبة النجاح للسجلات المحمّلة": "Calculate pass rate for loaded exams",
   "شعبة مؤرشفة": "Archived section",
   "مغادرة الشعبة": "Leave section",
   "مغادرة الشعبة؟": "Leave this section?",
@@ -463,5 +466,16 @@ const miqyasLocale = (() => {
     apply();
   }
   apply();
-  return {get english() {return english;},text,toggle};
+  function analytics() {
+    return english?{
+      description:'Review scores and question performance for an exam.',exam:'Exam',choose:'Choose an exam',view:'View analysis',
+      stats:['Average','Highest','Lowest'],distribution:'Score distribution',questions:'Question analysis',
+      headers:['Question','Correct answer rate','Note'],hard:'Very difficult',review:'Review suggested',empty:'No graded attempts yet.'
+    }:{
+      description:'راجع العلامات وأداء الطلاب على أسئلة الامتحان.',exam:'الامتحان',choose:'اختر امتحانًا',view:'عرض التحليل',
+      stats:['المتوسط','أعلى نسبة','أدنى نسبة'],distribution:'توزيع العلامات',questions:'تحليل الأسئلة',
+      headers:['السؤال','نسبة الإجابات الصحيحة','ملاحظة'],hard:'صعب جدًا',review:'يستحق المراجعة',empty:'لا توجد محاولات مصحّحة بعد.'
+    };
+  }
+  return {get english() {return english;},text,toggle,analytics};
 })();

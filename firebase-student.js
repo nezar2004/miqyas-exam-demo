@@ -3,7 +3,7 @@ import {
   browserSessionPersistence, createUserWithEmailAndPassword, EmailAuthProvider, getAuth, initializeAuth, inMemoryPersistence, reauthenticateWithCredential, setPersistence, updatePassword,
   reload, sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, updateProfile
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
-import {addDoc, collection, deleteDoc, doc, getDoc, getDocs, getFirestore, query, runTransaction, serverTimestamp, setDoc, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
+import {addDoc, collection, deleteDoc, doc, documentId, getDoc, getDocs, getFirestore, limit, orderBy, query, runTransaction, serverTimestamp, setDoc, startAfter, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
 
 const app=initializeApp({
   apiKey:'AIzaSyDi06jtrahqfRYpdRG523x3aJpqkullLsc',
@@ -140,24 +140,21 @@ export async function requestPasswordReset(email) {
   }
 }
 
+const adminCollections={students:'studentProfiles',teachers:'teacherRoles',admins:'adminRoles',log:'auditLog',exams:'publishedExams'};
+const records=snap=>snap.docs.map(item=>({...item.data(),id:item.id}));
+export async function loadAdminPage(type,cursor) {
+  const ordering=type==='log'?orderBy('at','desc'):orderBy(documentId());
+  const source=collection(db,adminCollections[type]);
+  const snap=await getDocs(query(source,ordering,...(cursor?[startAfter(cursor)]:[]),limit(50)));
+  const items=records(snap).filter(item=>type!=='exams' || !item.cancelled);
+  return {items,next:snap.size===50?snap.docs.at(-1):null};
+}
 export async function loadPeople() {
-  const [profiles,teachers,admins]=await Promise.all([
-    getDocs(collection(db,'studentProfiles')),getDocs(collection(db,'teacherRoles')),
-    getDocs(collection(db,'adminRoles'))
-  ]);
-  const registered=new Map(profiles.docs.map(item=>[item.id,{...item.data(),id:item.id}]));
-  const roleAccounts=records=>records.docs.map(item=>({...registered.get(item.id),...item.data(),id:item.id}));
-  const teacherAccounts=roleAccounts(teachers);
-  const adminAccounts=roleAccounts(admins);
-  const assigned=new Set([...teacherAccounts,...adminAccounts].map(person=>person.id));
-  const students=[...registered.values()].filter(person=>!assigned.has(person.id));
-  const byName=(a,b)=>(a.name || '').localeCompare(b.name || '','ar');
-  const [classes,subjects,log,exams]=await Promise.all([loadClasses('admin'),getDocs(collection(db,'subjects')),
-    getDocs(collection(db,'auditLog')),getDocs(collection(db,'publishedExams'))]);
-  const records=snap=>snap.docs.map(item=>({...item.data(),id:item.id}));
-  return {students:students.sort(byName),teachers:teacherAccounts.sort(byName),admins:adminAccounts.sort(byName),classes,
-    subjects:records(subjects),log:records(log).sort((a,b)=>b.at.toMillis()-a.at.toMillis()),
-    exams:records(exams).filter(exam=>!exam.cancelled)};
+  const types=Object.keys(adminCollections);
+  const [classes,subjects,...pages]=await Promise.all([loadClasses('admin'),getDocs(collection(db,'subjects')),
+    ...types.map(type=>loadAdminPage(type))]);
+  return {classes,subjects:records(subjects),...Object.fromEntries(types.map((type,i)=>[type,pages[i].items])),
+    cursors:Object.fromEntries(types.map((type,i)=>[type,pages[i].next]))};
 }
 export async function platformPassRate(exams) {
   const counts=await Promise.all(exams.map(async exam=>{
