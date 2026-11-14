@@ -463,14 +463,15 @@ export function calculateGrade(key,answers,pass) {
   return {earned,total,percent,passed:total>0 && earned*100>=pass*total};
 }
 export async function studentGrade(exam,includeDetails=false) {
-  const [key,attempt]=await Promise.all([
-    getDoc(doc(db,'examKeys',exam.id)),getDoc(submissionRef(exam.id))
-  ]);
-  if (!key.exists() || !attempt.data()?.submittedAt) return null;
+  if (Date.now()<await attemptDeadline(exam)) return null;
+  const attempt=await getDoc(submissionRef(exam.id));
+  if (!attempt.data()?.submittedAt) return null;
+  const key=await getDoc(doc(db,'examKeys',exam.id));
+  if (!key.exists()) return null;
   const answers=attempt.data().answers;
   const correct=key.data().answers;
   const grade=calculateGrade(correct,answers,exam.pass);
-  if (!includeDetails || Date.now()<await attemptDeadline(exam)) return grade;
+  if (!includeDetails) return grade;
   const content=await getDoc(doc(db,'examContent',exam.id));
   return {...grade,details:content.data()?.questions.map(question=>({
     prompt:question.prompt,

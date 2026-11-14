@@ -1,5 +1,6 @@
 const miqyasLocale = (() => {
   const translations = {
+  "علامتك رح تظهر بعد انتهاء وقت الامتحان": "Your score will appear after the exam ends",
   "سهل": "Easy",
   "متوسط": "Medium",
   "صعب": "Hard",

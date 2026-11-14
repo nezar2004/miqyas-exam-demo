@@ -385,11 +385,18 @@ function teacherExamActions(exam) {
     <div class="actions"><button class="primary">${exam.ready?'حفظ الموعد':'تفعيل تقديم الامتحان'}</button>
     ${exam.ready?button('إلغاء','cancel-reschedule'):''}</div></form>`;
 }
+function gradeDeadline(exam) {
+  return Date.parse(exam.start)+(exam.duration+(exam.extra || 0))*60000;
+}
+function gradeWait(exam) {
+  return `<span>علامتك رح تظهر بعد انتهاء وقت الامتحان <bdi dir="ltr" data-grade-deadline="${gradeDeadline(exam)}"></bdi></span>`;
+}
 function studentExamAction(exam) {
   const start=Date.parse(exam.start);
   const saved=db.submissions[exam.id];
   if (!exam.ready) return '<p class="muted">بانتظار تفعيل التقديم من المدرّس.</p>';
   if (saved?.submittedAt) {
+    if (Date.now()<gradeDeadline(exam)) return gradeWait(exam);
     const grade=grades.get(exam.id);
     return grade?`<div class="actions"><span class="badge ${grade.passed?'ok':'warn'}"><bdi dir="ltr">${num(grade.earned)} / ${num(grade.total)}</bdi> · <bdi dir="ltr">${num(grade.percent)}%</bdi> · ${grade.passed?'ناجح':'دون علامة النجاح'}</span>${button('تفاصيل النتيجة','grade',exam.id)}</div>`
       :`<div class="actions"><span class="badge ok">تم التسليم</span>${button('عرض العلامة','grade',exam.id)}</div>`;
@@ -413,7 +420,7 @@ async function showGrade(id) {
   if (grade) grades.set(id,grade);
   resultId=id;
   navigate('results');
-  toast(grade?'':'العلامة بانتظار تجهيز مفتاح الامتحان. خلي المدرّس يفتح كشف الأسماء وبعدين جرّب مرة ثانية.');
+  toast(grade || Date.now()<gradeDeadline(exam)?'':'العلامة بانتظار تجهيز مفتاح الامتحان. خلي المدرّس يفتح كشف الأسماء وبعدين جرّب مرة ثانية.');
 }
 function roster() {
   const {exam,entries,questions}=selectedRoster;
@@ -559,6 +566,13 @@ async function finishAttempt() {
 }
 let nextExpiryCheck=0;
 function tick() {
+  let gradeCountdownEnded=false;
+  for (const counter of document.querySelectorAll('[data-grade-deadline]')) {
+    const seconds=Math.max(0,Math.ceil((Number(counter.dataset.gradeDeadline)-Date.now())/1000));
+    counter.textContent=[Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(n=>String(n).padStart(2,'0')).join(':');
+    if (!seconds) gradeCountdownEnded=true;
+  }
+  if (gradeCountdownEnded && !busy) {render();return;}
   if (firebasePortal && role==='student' && page==='exams' && !busy && Date.now()>=nextExamBoundary) {
     render();
     return;
@@ -601,6 +615,8 @@ function studentResults() {
   if (resultId) {
     const exam=history.find(item=>item.id===resultId);
     const grade=grades.get(resultId);
+    if (exam && Date.now()<gradeDeadline(exam)) return hero('نتائجي',esc(exam.title),'تم التسليم')
+      + `<section class="card">${gradeWait(exam)}</section>${button('كل النتائج','all-results')}`;
     if (exam) return hero('نتائجي',esc(exam.title),grade?`العلامة ${num(grade.earned)} من ${num(grade.total)} · ${num(grade.percent)}% · ${grade.passed?'ناجح':'دون علامة النجاح'}`:'العلامة قيد التجهيز.')
       + `<div class="actions">${button('كل النتائج','all-results')}${button('تحديث التفاصيل','grade',exam.id)}</div>
       <section class="card">${grade?.details?.length?table(['السؤال','إجابتك','الإجابة الصحيحة','العلامة'],grade.details.map(item=>[
@@ -614,6 +630,7 @@ function studentResults() {
       <path d="M12 10V110H288" fill="none" stroke="var(--line)"/><polyline points="${points.map(point=>point.join(',')).join(' ')}" fill="none" stroke="currentColor" stroke-width="2"/>
       ${points.map(([x,y])=>`<circle cx="${x}" cy="${y}" r="3" fill="currentColor"/>`).join('')}</svg></section>`:'')
     + `<section class="card">${history.length?table(['الامتحان','العلامة','النسبة','الحالة','التفاصيل'],history.map(exam=>{
+      if (Date.now()<gradeDeadline(exam)) return [esc(exam.title),'—','—',gradeWait(exam),'—'];
       const grade=grades.get(exam.id);
       return [esc(exam.title),grade?`<bdi dir="ltr">${num(grade.earned)}/${num(grade.total)}</bdi>`:'—',
         grade?`<bdi dir="ltr">${num(grade.percent)}%</bdi>`:'—',grade?(grade.passed?'ناجح':'دون علامة النجاح'):'بانتظار العلامة',button('عرض النتيجة','grade',exam.id)];
@@ -983,7 +1000,7 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=17');
+        firebase ??= await import('./firebase-student.js?v=18');
         const formId=event.target.dataset.id;
         if (event.target.classList.contains('exam-settings') && role==='teacher') {
           await firebase.editExam(db.exams.find(exam=>exam.id===formId),{title:values.title.trim(),duration:Number(values.duration),pass:Number(values.pass)});
@@ -1209,7 +1226,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=17');
+    firebase=await import('./firebase-student.js?v=18');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

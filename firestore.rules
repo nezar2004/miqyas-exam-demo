@@ -229,9 +229,13 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/publishedExams/$(id)).data.owner == request.auth.uid;
     }
     match /examKeys/{id} {
+      function canReadStudentKey(uid) {
+        let exam = get(/databases/$(database)/documents/publishedExams/$(id)).data;
+        return get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data.submittedAt is timestamp
+          && request.time >= exam.start + duration.value(exam.duration + extraMinutes(id, uid), 'm');
+      }
       allow get: if request.auth != null && (admin() || ownsExam(id)
-        || (student(request.auth.uid)
-          && get(/databases/$(database)/documents/studentProfiles/$(request.auth.uid)/attempts/$(id)).data.submittedAt is timestamp));
+        || (student(request.auth.uid) && canReadStudentKey(request.auth.uid)));
       allow create: if teacher()
         && getAfter(/databases/$(database)/documents/publishedExams/$(id)).data.owner == request.auth.uid
         && request.resource.data.keys().hasOnly(['answers'])
