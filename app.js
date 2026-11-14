@@ -177,6 +177,7 @@ async function perform(work) {
   finally {busy=false; view.removeAttribute('aria-busy');}
 }
 function navigate(next) {
+  if (next!=='bank') importedQuestions=[];
   closeMenu();
   if (next!=='bank') editingQuestionId=undefined;
   if (next!=='exams') reschedulingExamId=undefined;
@@ -466,6 +467,12 @@ function roster() {
       entry.canRetry && Date.now()<exam.closesAt && entry.nextAttempt<=exam.maxAttempts
         ? entry.retry===entry.nextAttempt?'المحاولة متاحة':button('فتح محاولة جديدة','grant-retry',entry.id):'—'
     ])):'<p>لسه ما في محاولات مسجّلة لهالامتحان.</p>'}</section>
+    ${entries.flatMap(entry=>(entry.essays || []).map(essay=>`<section class="card"><h3>${esc(entry.name)} · ${esc(essay.prompt)}</h3>
+      <p>${esc(essay.response || 'بدون إجابة')}</p><p>معيار التصحيح · ${esc(essay.rubric)}</p>
+      <form class="essay-grade-form" data-id="${esc(entry.id)}" data-question="${esc(essay.id)}" data-number="${essay.number}">
+        <label>العلامة<input type="number" min="0" max="${essay.max}" name="points" value="${essay.mark?.points ?? ''}" required></label>
+        <label>تعليق المدرّس<textarea name="comment" maxlength="1000">${esc(essay.mark?.comment)}</textarea></label>
+        <div><button>حفظ التصحيح</button></div></form></section>`)).join('')}
     ${marks.length?`<section class="card"><h2>توزيع العلامات</h2>${table(['النسبة','عدد الطلاب'],buckets.map(([label,inRange])=>[
       `<bdi>${label}</bdi>`,num(marks.filter(inRange).length)
     ]))}</section><section class="card"><h2>تحليل الأسئلة</h2>${table(['السؤال','أجابوا صح','النسبة','ملاحظة'],questions.map(question=>[
@@ -484,6 +491,12 @@ function answerOption(index, fixedAnswer, count, existing) {
   </div>`;
 }
 function questionFromForm(form, existing) {
+  const type=form.get('type');
+  if (type==='blank' || type==='essay') {
+    const options=type==='blank'?form.get('accepted').split(/\r?\n/).map(x=>x.trim()).filter(Boolean):[form.get('rubric').trim()];
+    if (!options[0] || options.length>10 || (type==='blank' && options.some(x=>x.length>200))) throw new Error('راجع الإجابات المقبولة أو معيار التصحيح.');
+    return {type,prompt:form.get('prompt').trim(),options,correct:0,points:Number(form.get('points'))};
+  }
   const boolean=form.get('type')==='boolean';
   const options=boolean?['صح','خطأ']:form.getAll('option').map(value=>value.trim());
   const selection=form.get(boolean?'correctBoolean':'correct');
@@ -492,7 +505,7 @@ function questionFromForm(form, existing) {
   if (!prompt || ![2,4,6,existing?.options.length].includes(options.length) || options.some(value=>!value) || !options[correct]) {
     throw new Error('اكتب السؤال وكل الخيارات، وحدّد إجابة صحيحة واحدة.');
   }
-  return {prompt,options,correct,points:Number(form.get('points'))};
+  return {prompt,options,correct,points:Number(form.get('points')),...(firebasePortal?{type:'choice'}:{})};
 }
 function bank() {
   const existing=db.questions.find(item=>item.id===editingQuestionId);
@@ -504,26 +517,66 @@ function bank() {
     && ['subject','topic','difficulty'].every(key=>!bankFilters[key] || (q[key] || '').toLowerCase().includes(bankFilters[key])));
   return hero('أدوات المدرّس','بنك الأسئلة','أضف أسئلة اختيار من متعدد أو صح وخطأ لاستخدامها في امتحاناتك.') +
     `<section class="card"><h2>${existing?'تعديل سؤال':'إضافة سؤال'}</h2><form id="question-form" data-id="${esc(existing?.id ?? '')}">
-    <label>نوع السؤال<select id="question-type" name="type"><option value="multiple">اختيار من متعدد</option><option value="boolean" ${boolean?'selected':''}>صح أو خطأ</option></select></label>
+    <label>نوع السؤال<select id="question-type" name="type"><option value="multiple">اختيار من متعدد</option><option value="boolean" ${boolean?'selected':''}>صح أو خطأ</option>
+    ${firebasePortal?`<option value="blank" ${existing?.type==='blank'?'selected':''}>ملء فراغ</option><option value="essay" ${existing?.type==='essay'?'selected':''}>مقالي</option>`:''}</select></label>
     <label>نص السؤال<textarea name="prompt" required maxlength="400">${esc(existing?.prompt ?? '')}</textarea></label>
     ${firebasePortal?`<div class="grid"><label>المادة<input name="subject" maxlength="80" value="${esc(existing?.subject)}"></label>
     <label>الموضوع<input name="topic" maxlength="80" value="${esc(existing?.topic)}"></label>
     <label>الصعوبة<select name="difficulty"><option value="">غير مصنّف</option>${difficultyOptions(existing?.difficulty)}</select></label></div>`:''}
-    <fieldset id="multiple-options" class="answer-options" ${boolean?'hidden disabled':''}><legend>خيارات الإجابة</legend>
+    <fieldset id="multiple-options" class="answer-options" ${boolean || ['blank','essay'].includes(existing?.type)?'hidden disabled':''}><legend>خيارات الإجابة</legend>
     <label>عدد الخيارات<select id="option-count">${counts.map(n=>`<option value="${n}" ${n===count?'selected':''}>${num(n)}</option>`).join('')}</select></label>
     <p class="muted">حدّد مربع الإجابة الصحيحة.</p>
     ${Array.from({length:Math.max(6,count)},(_,index)=>answerOption(index,null,count,existing)).join('')}</fieldset>
     <fieldset id="boolean-options" class="answer-options" ${boolean?'':'hidden disabled'}><legend>الإجابة الصحيحة</legend>
     ${['صح','خطأ'].map((answer,index)=>answerOption(index,answer,2,boolean?existing:null)).join('')}</fieldset>
+    ${firebasePortal?`<fieldset id="blank-options" ${existing?.type==='blank'?'':'hidden disabled'}><label>الإجابات المقبولة، إجابة بكل سطر<textarea name="accepted" required maxlength="2010">${esc(existing?.type==='blank'?existing.options.join('\n'):'')}</textarea></label></fieldset>
+    <fieldset id="essay-options" ${existing?.type==='essay'?'':'hidden disabled'}><label>معيار التصحيح<textarea name="rubric" required maxlength="1000">${esc(existing?.type==='essay'?existing.options[0]:'')}</textarea></label></fieldset>`:''}
     <label>العلامة<input name="points" type="number" min="1" max="100" value="${existing?.points ?? 1}" required></label>
     <div class="actions"><button class="primary">${existing?'حفظ التعديل':'حفظ السؤال'}</button>${existing?button('إلغاء التعديل','cancel-question-edit'):''}</div></form></section>
-    <section class="card"><h2>الأسئلة المحفوظة</h2>${firebasePortal?`<form id="bank-search"><div class="grid"><label>البحث في الأسئلة<input name="search" type="search" value="${esc(bankSearch)}"></label>
+    ${firebasePortal?questionImport():''}<section class="card"><h2>الأسئلة المحفوظة</h2>${firebasePortal?`<form id="bank-search"><div class="grid"><label>البحث في الأسئلة<input name="search" type="search" value="${esc(bankSearch)}"></label>
       <label>المادة<input name="subject" value="${esc(bankFilters.subject)}"></label><label>الموضوع<input name="topic" value="${esc(bankFilters.topic)}"></label>
       <label>الصعوبة<select name="difficulty"><option value="">الكل</option>${difficultyOptions(bankFilters.difficulty)}</select></label></div><div><button>بحث</button></div></form>`:''}${table(
       ['السؤال','الإجابة الصحيحة','العلامة',...(firebasePortal?['الإجراء']:[])],
-      matching.map(q=>[esc(q.prompt)+(firebasePortal?`<small class="muted"> ${[q.subject,q.topic,difficulties[q.difficulty]].filter(Boolean).map(esc).join(' · ')}</small>`:''),esc(q.options[q.correct]),num(q.points),
+      matching.map(q=>[esc(q.prompt)+(firebasePortal?`<small class="muted"> ${[q.subject,q.topic,difficulties[q.difficulty]].filter(Boolean).map(esc).join(' · ')}</small>`:''),esc(q.type==='blank'?q.options.join(' / '):q.options[q.correct]),num(q.points),
         ...(firebasePortal?[button('تعديل','edit-question',q.id)+button('حذف','delete-question',q.id)]:[])])
     )}</section>`;
+}
+let importedQuestions=[];
+function questionImport() {
+  return `<section class="card"><h2>استيراد أسئلة CSV</h2><a class="back-link" download="miqyas-questions.csv" href="data:text/csv;charset=utf-8,%EF%BB%BFprompt%2Ctype%2Coptions%2Ccorrect%2Cpoints%0AExample%20question%2Cchoice%2CA%7CB%2C1%2C1">تنزيل قالب CSV</a>
+    <form id="question-import"><label>ملف CSV<input name="csv" type="file" accept=".csv,text/csv" required></label><div><button>معاينة الأسئلة</button></div></form>
+    ${importedQuestions.length?table(['السؤال','نوع السؤال','العلامة'],importedQuestions.map(q=>[esc(q.prompt),q.type==='essay'?'مقالي':q.type==='blank'?'ملء فراغ':'اختيار من متعدد',num(q.points)]))+button('حفظ الأسئلة المستوردة','save-question-import'):''}</section>`;
+}
+function parseQuestionCsv(csv) {
+  const rows=[];
+  let row=[],value='',quoted=false,closed=false;
+  for (const char of csv.replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n')) {
+    if (char==='"') {
+      if (quoted) {quoted=false;closed=true;}
+      else if (closed) {value+='"';quoted=true;closed=false;}
+      else if (!value) quoted=true;
+      else throw new Error('ملف CSV غير صالح.');
+    } else if (!quoted && (char===',' || char==='\n')) {
+      row.push(value);value='';closed=false;
+      if (char==='\n') {rows.push(row);row=[];}
+    } else {
+      if (closed && !quoted) throw new Error('ملف CSV غير صالح.');
+      value+=char;
+    }
+  }
+  if (quoted) throw new Error('ملف CSV غير صالح.');
+  row.push(value);
+  if (row.some(Boolean)) rows.push(row);
+  if (rows.shift()?.join(',')!=='prompt,type,options,correct,points' || !rows.length || rows.length>100) throw new Error('استخدم قالب CSV حتى 100 سؤال.');
+  return rows.map(([prompt,type,raw,answer,mark,...rest])=>{
+    const options=(type==='essay'?[raw]:raw?.split('|') || []).map(x=>x?.trim());
+    const correct=type==='choice'?Number(answer)-1:0;
+    const points=Number(mark);
+    if (rest.length || !prompt?.trim() || prompt.length>400 || !['choice','blank','essay'].includes(type)
+      || options.length<(type==='choice'?2:1) || options.length>10 || options.some(x=>!x || x.length>(type==='essay'?1000:200))
+      || !Number.isInteger(correct) || !options[correct] || !Number.isInteger(points) || points<1 || points>100) throw new Error('ملف CSV غير صالح.');
+    return {prompt:prompt.trim(),type,options,correct,points};
+  });
 }
 function create() {
   const draft=firebasePortal?copiedExam:undefined;
@@ -571,7 +624,8 @@ function attempt() {
     <p id="attempt-save-status" role="status">${!navigator.onLine?'الاتصال مقطوع. اترك الصفحة مفتوحة حتى يرجع الاتصال.':savingAnswer?'جاري حفظ الإجابة…':pendingAnswer?'في إجابة بانتظار الحفظ.':'الإجابات الظاهرة محفوظة.'}</p>
     ${pendingAnswer&&!savingAnswer&&navigator.onLine?button('إعادة محاولة الحفظ','retry-answer'):''}</section>
     <section class="card"><fieldset><legend>السؤال ${num(position+1)} · ${num(q.points)} علامة</legend><h2>${esc(q.prompt)}</h2>
-    ${q.options.map((choice,index)=>`<label class="choice"><input type="radio" name="answer" value="${index}" ${current.answers[q.id]===index?'checked':''}>${esc(choice)}</label>`).join('')}</fieldset>
+    ${q.type?`<form id="written-answer"><label>إجابتك<textarea name="written" maxlength="${q.type==='essay'?2000:200}">${esc(current.answers[q.id])}</textarea></label><div><button>حفظ الإجابة</button></div></form>`:
+      q.options.map((choice,index)=>`<label class="choice"><input type="radio" name="answer" value="${index}" ${current.answers[q.id]===index?'checked':''}>${esc(choice)}</label>`).join('')}</fieldset>
     <div class="row"><div class="actions">${position>0?button('السابق','jump',position-1):''}${position+1<current.order.length?button('التالي','jump',position+1,true):''}${button(current.review[q.id]?'إزالة علامة المراجعة':'علّم للمراجعة','review')}</div>${button('تسليم الامتحان','finish')}</div></section>`;
 }
 async function finishAttempt() {
@@ -647,8 +701,8 @@ function studentResults() {
       + `<section class="card">${gradeWait(exam)}</section>${button('كل النتائج','all-results')}`;
     if (exam) return hero('نتائجي',esc(exam.title),grade?`العلامة ${num(grade.earned)} من ${num(grade.total)} · ${num(grade.percent)}% · ${grade.passed?'ناجح':'دون علامة النجاح'}`:'العلامة قيد التجهيز.')
       + `<div class="actions">${button('كل النتائج','all-results')}${button('تحديث التفاصيل','grade',exam.id)}</div>
-      <section class="card">${grade?.details?.length?table(['السؤال','إجابتك','الإجابة الصحيحة','العلامة'],grade.details.map(item=>[
-        esc(item.prompt),esc(item.selected ?? 'بدون إجابة'),esc(item.correct ?? 'غير متاحة'),`<bdi dir="ltr">${num(item.earned)}/${num(item.points)}</bdi>`
+      <section class="card">${grade?.details?.length?table(['السؤال','إجابتك','الإجابة الصحيحة','العلامة','تعليق المدرّس'],grade.details.map(item=>[
+        esc(item.prompt),esc(item.selected ?? 'بدون إجابة'),esc(item.correct ?? 'غير متاحة'),`<bdi dir="ltr">${num(item.earned)}/${num(item.points)}</bdi>`,esc(item.comment || '—')
       ])):`<p>${Date.now()<Date.parse(exam.start)+(exam.duration+(exam.extra || 0))*60000?'تفاصيل الإجابات بتظهر بعد انتهاء وقت الامتحان.':'تفاصيل الإجابات غير متاحة حاليًا.'}</p>`}</section>`;
   }
   const marks=history.map(exam=>grades.get(exam.id)).filter(Boolean);
@@ -924,6 +978,13 @@ document.addEventListener('click',event=>{
     navigate('create');
     toast('تم تعبئة بيانات النسخة. حدّد موعدها قبل النشر.');
   });
+  if (action==='save-question-import' && role==='teacher' && importedQuestions.length) perform(async()=>{
+    await firebase.importQuestions(importedQuestions);
+    importedQuestions=[];
+    await loadFirebaseAccount(account);
+    render();
+    toast('تم حفظ الأسئلة المستوردة.');
+  });
   if (action==='release-results' && role==='teacher' && confirm(t('نشر نتائج الامتحان؟'))) perform(async()=>{
     await firebase.releaseResults(id);
     await loadFirebaseAccount(account);
@@ -1048,8 +1109,12 @@ document.addEventListener('change',event=>{
     const boolean=field.value==='boolean';
     const multipleOptions=document.querySelector('#multiple-options');
     const booleanOptions=document.querySelector('#boolean-options');
-    multipleOptions.hidden=multipleOptions.disabled=boolean;
+    multipleOptions.hidden=multipleOptions.disabled=field.value!=='multiple';
     booleanOptions.hidden=booleanOptions.disabled=!boolean;
+    for (const type of ['blank','essay']) {
+      const section=document.querySelector('#'+type+'-options');
+      if (section) section.hidden=section.disabled=field.value!==type;
+    }
   }
   if (field.id==='option-count') {
     const count=Number(field.value);
@@ -1096,7 +1161,30 @@ document.addEventListener('submit',event=>{
     try {
       const values=Object.fromEntries(form);
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=21');
+        firebase ??= await import('./firebase-student.js?v=22');
+        if (event.target.id==='question-import' && role==='teacher') {
+          importedQuestions=[];
+          const file=form.get('csv');
+          if (!file?.size || file.size>500000) throw new Error('ملف CSV غير صالح.');
+          importedQuestions=parseQuestionCsv(await file.text());
+          render();
+          return;
+        }
+        if (event.target.id==='written-answer' && page==='attempt' && role==='student') {
+          if (pendingAnswer) return;
+          pendingAnswer={id:active,question:db.attempts[active].order[position],value:values.written.trim()};
+          await flushAnswer();
+          return;
+        }
+        if (event.target.classList.contains('essay-grade-form') && role==='teacher' && selectedRoster) {
+          const {id,question,number}=event.target.dataset;
+          const exam=selectedRoster.exam;
+          await firebase.gradeEssay(exam.id,id,question,{number:Number(number),points:Number(values.points),comment:values.comment.trim()});
+          selectedRoster={exam,...await firebase.examRoster(exam,db.questions)};
+          render();
+          toast('تم حفظ التصحيح.');
+          return;
+        }
         if (event.target.id==='analytics-form' && role==='teacher') {
           const exam=db.exams.find(item=>item.id===values.exam);
           if (!exam) return;
@@ -1343,7 +1431,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=21');
+    firebase=await import('./firebase-student.js?v=22');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

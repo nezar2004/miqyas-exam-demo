@@ -160,15 +160,20 @@ service cloud.firestore {
           && q.get('subject', '') is string && q.get('subject', '').size() <= 80
           && q.get('topic', '') is string && q.get('topic', '').size() <= 80
           && q.get('difficulty', '') in ['', 'easy', 'medium', 'hard']
-          && q.options is list && q.options.size() >= 2 && q.options.size() <= 10
-          && q.correct is int && q.correct >= 0 && q.correct < q.options.size()
+          && q.options is list
+          && (q.get('type','choice') == 'blank'
+            ? q.options.size() >= 1 && q.options.size() <= 10 && q.correct == 0
+            : q.get('type','choice') == 'essay'
+              ? q.options.size() == 1 && q.options[0] is string && q.options[0].size() <= 1000 && q.correct == 0
+              : q.get('type','choice') == 'choice' && q.options.size() >= 2 && q.options.size() <= 10
+                && q.correct is int && q.correct >= 0 && q.correct < q.options.size())
           && q.points is int && q.points >= 1 && q.points <= 100;
       }
       allow read: if teacher() && request.auth.uid == uid;
       allow create: if teacher() && request.auth.uid == uid && validQuestion()
-        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points', 'subject', 'topic', 'difficulty']);
+        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points', 'subject', 'topic', 'difficulty', 'type']);
       allow update: if teacher() && request.auth.uid == uid && validQuestion()
-        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points', 'subject', 'topic', 'difficulty', 'originalCorrect', 'originalPoints'])
+        && request.resource.data.keys().hasOnly(['prompt', 'options', 'correct', 'points', 'subject', 'topic', 'difficulty', 'type', 'originalCorrect', 'originalPoints'])
         && request.resource.data.originalCorrect == resource.data.get('originalCorrect', resource.data.correct)
         && request.resource.data.originalPoints == resource.data.get('originalPoints', resource.data.points);
       allow delete: if teacher() && request.auth.uid == uid;
@@ -340,6 +345,24 @@ service cloud.firestore {
         && request.resource.data.shuffle is bool;
     }
     match /studentProfiles/{uid}/attempts/{id} {
+      match /manualGrades/{question} {
+        function attempt() {
+          return get(/databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id)).data;
+        }
+        function validMark() {
+          let mark = request.resource.data;
+          let key = get(/databases/$(database)/documents/examKeys/$(id)).data.answers[question];
+          return attempt().submittedAt is timestamp && key.get('essay', false) == true
+            && mark.keys().hasOnly(['number', 'points', 'comment'])
+            && mark.number == attempt().get('number', 1)
+            && mark.points is int && mark.points >= 0 && mark.points <= key.points
+            && mark.comment is string && mark.comment.size() <= 1000;
+        }
+        allow get: if ownsExam(id) || admin()
+          || (student(uid) && attempt().submittedAt is timestamp
+            && resultsAvailable(get(/databases/$(database)/documents/publishedExams/$(id)).data, id, uid));
+        allow create, update: if ownsExam(id) && validMark();
+      }
       match /history/{number} {
         function activePath() {return /databases/$(database)/documents/studentProfiles/$(uid)/attempts/$(id);}
         allow read: if student(uid) || ownsExam(id) || admin();

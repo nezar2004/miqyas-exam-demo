@@ -174,6 +174,22 @@ test('tab exits use one immutable document per minute', async () => {
   await assertFails(setDoc(event,{at:serverTimestamp()}));
 });
 
+test('essay grades are bounded and readable by the student only after results open', async () => {
+  const path=attemptPath(student,'essay');
+  const markPath=path+'/manualGrades/q';
+  await seed([['publishedExams/essay',exam(-1)],['examKeys/essay',{answers:{q:{essay:true,points:3,rubric:'Explain'}}}],
+    [path,{startedAt:timestamp(-0.5),submittedAt:timestamp(-0.1),answers:{q:'Response'},review:{}}]]);
+  const staff=as(teacher);
+  const learner=as(student);
+  const mark={number:1,points:2,comment:'Good explanation'};
+  await assertFails(setDoc(doc(learner,markPath),mark));
+  await assertFails(setDoc(doc(staff,markPath),{...mark,points:4}));
+  await assertSucceeds(setDoc(doc(staff,markPath),mark));
+  await assertFails(getDocFromServer(doc(learner,markPath)));
+  await env.withSecurityRulesDisabled(context=>updateDoc(doc(context.firestore(),'publishedExams/essay'),{start:timestamp(-10)}));
+  assert.deepEqual((await assertSucceeds(getDocFromServer(doc(learner,markPath)))).data(),mark);
+});
+
 test('instructor publishes, student starts and submits, and score inputs unlock after closing', async () => {
   const staff = as(teacher);
   const batch = writeBatch(staff);

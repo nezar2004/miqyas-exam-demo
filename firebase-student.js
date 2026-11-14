@@ -163,8 +163,9 @@ export async function platformPassRate(exams) {
     if (!key.exists()) return {passed:0,total:0};
     const submissions=await Promise.all(participants.docs.map(person=>
       getDoc(doc(db,'studentProfiles',person.id,'attempts',exam.id))));
-    const grades=submissions.filter(item=>item.data()?.submittedAt)
-      .map(item=>calculateGrade(key.data().answers,item.data().answers,exam.pass));
+    const grades=(await Promise.all(submissions.filter(item=>item.data()?.submittedAt)
+      .map(async item=>calculateGrade(key.data().answers,item.data().answers,exam.pass,
+        await manualMarks(item.ref,key.data().answers,item.data()))))).filter(Boolean);
     return {passed:grades.filter(grade=>grade.passed).length,total:grades.length};
   }));
   return counts.reduce((sum,item)=>({passed:sum.passed+item.passed,total:sum.total+item.total}),{passed:0,total:0});
@@ -333,6 +334,11 @@ export async function assignLegacyExam(id,classIds,section) {
 export async function addQuestion(question) {
   await addDoc(bank(),question);
 }
+export async function importQuestions(questions) {
+  const batch=writeBatch(db);
+  for (const question of questions) batch.set(doc(bank()),question);
+  await batch.commit();
+}
 export function removeQuestion(id) {return deleteDoc(doc(bank(),id));}
 export async function editQuestion(id, question) {
   const ref=doc(bank(),id);
@@ -351,7 +357,9 @@ function examQuestions(ids,bankQuestions) {
   return ids.map(id=>{
     const item=bankQuestions.find(question=>question.id===id);
     if (!item) throw new Error('بعض أسئلة الامتحان غير موجودة في البنك.');
-    return {id,prompt:item.prompt,options:item.options,points:item.points};
+    const written=item.type==='blank' || item.type==='essay';
+    return {id,prompt:item.prompt,options:written?[]:item.options,points:item.points,
+      ...(written?{type:item.type}:{})};
   });
 }
 function answerKey(ids,bankQuestions,original=false) {
@@ -360,7 +368,8 @@ function answerKey(ids,bankQuestions,original=false) {
     if (!question) throw new Error('بعض أسئلة الامتحان غير موجودة في البنك.');
     const correct=original?(question.originalCorrect ?? question.correct):question.correct;
     const points=original?(question.originalPoints ?? question.points):question.points;
-    return [id,{correct,points}];
+    return [id,question.type==='blank'?{accepted:question.options,points}:
+      question.type==='essay'?{essay:true,rubric:question.options[0],points}:{correct,points}];
   }));
 }
 export async function publishExam({ids,shuffle,start,closesAt,...metadata},bankQuestions) {
@@ -485,12 +494,28 @@ export function submitAttempt(id) {
   });
 }
 
-export function calculateGrade(key,answers,pass) {
+function matchesAnswer(key,value) {
+  if (key.accepted) return typeof value==='string' && key.accepted.some(answer=>
+    answer.normalize('NFKC').trim().toLowerCase()===value.normalize('NFKC').trim().toLowerCase());
+  return Number.isInteger(value) && value===key.correct;
+}
+async function manualMarks(ref,key,attempt) {
+  const ids=Object.keys(key).filter(id=>key[id].essay);
+  const marks=await Promise.all(ids.map(id=>getDoc(doc(ref,'manualGrades',id))));
+  return Object.fromEntries(marks.flatMap((mark,i)=>mark.data()?.number===(attempt.number ?? 1)?[[ids[i],mark.data()]]:[]));
+}
+export function gradeEssay(examId,uid,question,mark) {
+  return setDoc(doc(db,'studentProfiles',uid,'attempts',examId,'manualGrades',question),mark);
+}
+export function calculateGrade(key,answers,pass,marks={}) {
   let total=0;
   let earned=0;
   for (const [id,item] of Object.entries(key)) {
     total+=item.points;
-    if (Object.hasOwn(answers,id) && answers[id]===item.correct) earned+=item.points;
+    if (item.essay) {
+      if (!marks[id]) return null;
+      earned+=marks[id].points;
+    } else if (Object.hasOwn(answers,id) && matchesAnswer(item,answers[id])) earned+=item.points;
   }
   const percent=total?Math.round(10000*earned/total)/100:0;
   return {earned,total,percent,passed:total>0 && earned*100>=pass*total};
@@ -504,15 +529,17 @@ export async function studentGrade(exam,includeDetails=false) {
   if (!key.exists()) return null;
   const answers=attempt.data().answers;
   const correct=key.data().answers;
-  const grade=calculateGrade(correct,answers,exam.pass);
-  if (!includeDetails) return grade;
+  const marks=await manualMarks(attempt.ref,correct,attempt.data());
+  const grade=calculateGrade(correct,answers,exam.pass,marks);
+  if (!grade || !includeDetails) return grade;
   const content=await getDoc(doc(db,'examContent',exam.id));
   return {...grade,details:content.data()?.questions.map(question=>({
     prompt:question.prompt,
-    selected:question.options[answers[question.id]],
-    correct:question.options[correct[question.id]?.correct],
+    selected:question.type?answers[question.id]:question.options[answers[question.id]],
+    correct:correct[question.id]?.accepted?.join(' / ') ?? question.options[correct[question.id]?.correct],
     points:correct[question.id]?.points ?? question.points,
-    earned:answers[question.id]===correct[question.id]?.correct && correct[question.id]?correct[question.id].points:0
+    earned:marks[question.id]?.points ?? (correct[question.id] && matchesAnswer(correct[question.id],answers[question.id])?correct[question.id].points:0),
+    comment:marks[question.id]?.comment
   }))};
 }
 export async function examRoster(exam,bankQuestions) {
@@ -536,6 +563,7 @@ export async function examRoster(exam,bankQuestions) {
   ]);
   const extra=new Map(extensions.docs.map(item=>[item.id,item.data().minutes]));
   const retry=new Map(retries.docs.map(item=>[item.id,item.data().number]));
+  const prompts=new Map((content.data()?.questions || []).map(question=>[question.id,question.prompt]));
   const roster=await Promise.all(entries.docs.map(async entry=>{
     const ref=doc(db,'studentProfiles',entry.id,'attempts',exam.id);
     const [snapshot,tabEvents]=await Promise.all([getDoc(ref),getDocs(collection(ref,'tabEvents'))]);
@@ -543,16 +571,19 @@ export async function examRoster(exam,bankQuestions) {
     const minutes=extra.get(entry.id) || 0;
     const closed=Date.now()>=deadlineFor(exam,attempt,minutes);
     const submitted=Boolean(attempt?.submittedAt || (attempt && (closed || attempt.startedAt.toMillis()<Date.parse(exam.start))));
-    return {id:entry.id,name:entry.data().name,minutes,submitted,canExtend:!!attempt && !attempt.submittedAt,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass):null,
+    const marks=attempt?.submittedAt?await manualMarks(ref,answers,attempt):{};
+    const essays=attempt?.submittedAt?Object.entries(answers).filter(([,key])=>key.essay).map(([id,key])=>({
+      id,prompt:prompts.get(id),response:attempt.answers[id],rubric:key.rubric,max:key.points,mark:marks[id],number:attempt.number ?? 1
+    })):[];
+    return {id:entry.id,name:entry.data().name,minutes,submitted,canExtend:!!attempt && !attempt.submittedAt,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass,marks):null,essays,
       nextAttempt:(attempt?.number ?? 1)+1,retry:retry.get(entry.id),canRetry:!!attempt?.submittedAt,
       responses:submitted?attempt.answers:null,
       tabExits:tabEvents.size,lastTabExit:Math.max(0,...tabEvents.docs.map(event=>event.data().at.toMillis()))};
   }));
-  const prompts=new Map((content.data()?.questions || []).map(question=>[question.id,question.prompt]));
   const submitted=roster.filter(entry=>entry.responses);
-  return {entries:roster,questions:Object.entries(answers).map(([id,key],index)=>({
+  return {entries:roster,questions:Object.entries(answers).filter(([,key])=>!key.essay).map(([id,key],index)=>({
     prompt:prompts.get(id) || 'السؤال '+(index+1),
-    correct:submitted.filter(entry=>entry.responses[id]===key.correct).length,
+    correct:submitted.filter(entry=>matchesAnswer(key,entry.responses[id])).length,
     total:submitted.length
   }))};
 }
