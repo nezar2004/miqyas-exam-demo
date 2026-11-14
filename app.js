@@ -45,7 +45,7 @@ const paths = {
 };
 const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 const menus = {
-  student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي', notifications:'الإشعارات', studentProfile:'ملفي الشخصي'},
+  student:{exams:'الامتحانات', classes:'شُعبي', results:'نتائجي', notifications:'الإشعارات', practice:'امتحان تجريبي', help:'المساعدة', studentProfile:'ملفي الشخصي'},
   teacher:{exams:'إدارة الامتحانات', classes:'الشُعب', bank:'بنك الأسئلة', create:'إنشاء امتحان', analytics:'تحليل النتائج', studentProfile:'ملفي الشخصي'},
   admin:{people:'حسابات المستخدمين', addTeacher:'إضافة حساب', classes:'إدارة الشُعب', subjects:'المواد', log:'سجل النشاط', studentProfile:'ملفي الشخصي'}
 };
@@ -249,11 +249,11 @@ function renderScreen() {
   document.title = portals[role].title+' | مقياس';
   document.querySelector('#account-name').textContent = account.name;
   document.querySelector('#account-role').textContent = t(roleNames[role]);
-  const navIcons = {exams:'grid',classes:'cap',results:'chart',notifications:'clock',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',subjects:'paper',log:'clock'};
+  const navIcons = {exams:'grid',classes:'cap',results:'chart',notifications:'clock',practice:'paper',help:'cap',studentProfile:'cap',bank:'paper',create:'paper',analytics:'chart',people:'shield',addTeacher:'cap',subjects:'paper',log:'clock'};
   nav.innerHTML = t(Object.entries(menus[role]).filter(([id])=>firebasePortal || !['addTeacher','classes','studentProfile','subjects','notifications'].includes(id)).map(([id, title])=>`<button type="button" data-action="page" data-id="${id}" ${id===page?'aria-current="page"':''}>${icon(navIcons[id])}${title}</button>`).join(''));
   document.querySelector('#workspace-role').textContent = t(portals[role].title);
   document.querySelector('#section').textContent = t(menus[role][page] || (page==='roster'?'الطلاب والنتائج':'تقديم الامتحان'));
-  const screens = {exams, classes, results, notifications, studentProfile, bank, create, analytics, people, addTeacher, subjects, log, attempt, roster};
+  const screens = {exams, classes, results, notifications, practice, help, studentProfile, bank, create, analytics, people, addTeacher, subjects, log, attempt, roster};
   view.innerHTML = t(screens[page]());
   tick();
 }
@@ -277,14 +277,37 @@ function notifications() {
     const grade=grades.get(exam.id);
     if (grade) return [{exam,label:'النتيجة جاهزة',action:'grade',date:db.submissions[exam.id]?.submittedAt?.toMillis?.() || Date.parse(exam.start)}];
     const start=Date.parse(exam.start);
-    return exam.ready && !db.submissions[exam.id]?.submittedAt && start+(exam.duration+(exam.extra || 0))*60000>now
-      ?[{exam,label:'امتحان منشور',action:'notification-exam',date:exam.publishedAt?.toMillis?.() || start}]:[];
+    return exam.ready && !exam.cancelled && !db.submissions[exam.id]?.submittedAt && (exam.closesAt ?? start+(exam.duration+(exam.extra || 0))*60000)>now
+      ?[{exam,label:exam.rescheduledAt?'تغيّر موعد الامتحان':'امتحان منشور',action:'notification-exam',
+        date:(exam.rescheduledAt || exam.publishedAt)?.toMillis?.() || start}]:[];
   }).sort((a,b)=>b.date-a.date);
   return hero('لوحة الطالب','الإشعارات','تابع الامتحانات المنشورة والنتائج الجاهزة.')
     + `<div class="actions">${button('تحديث الإشعارات','refresh-exams')}</div>`
     + (items.length?items.map(({exam,label,action,date})=>`<section class="card"><span class="badge">${label}</span>
-      <h2>${esc(exam.title)}</h2><p class="muted"><bdi>${fmt(date)}</bdi></p>
+      <h2>${esc(exam.title)}</h2><p class="muted"><bdi>${fmt(date)}</bdi></p>${exam.rescheduledAt && action==='notification-exam'?examDates(exam.start):''}
       ${button(action==='grade'?'عرض النتيجة':'عرض الامتحانات',action,exam.id)}</section>`).join(''):'<section class="card student-empty"><h3>ما في إشعارات حاليًا</h3></section>');
+}
+let practiceScore=null;
+const practiceQuestions=[
+  ['أي وصف ينطبق على كلمة مرور قوية؟',['قصيرة وتستخدم في كل الحسابات','طويلة وفريدة لكل حساب'],1],
+  ['كم دقيقة في الساعة؟',['60','100'],0],
+  ['هل يحفظ زر التسليم إجابات الامتحان رسميًا؟',['صح','خطأ'],0]
+];
+function practice() {
+  return hero('لوحة الطالب','امتحان تجريبي','جرّب الإجابة والتسليم. نتيجتك التجريبية لا تُسجّل.')
+    + `<section class="card"><form id="practice-form">${practiceQuestions.map(([prompt,options],i)=>`<fieldset><legend>${num(i+1)} · ${prompt}</legend>
+      ${options.map((option,j)=>`<label class="choice"><input type="radio" name="p${i}" value="${j}" required>${option}</label>`).join('')}</fieldset>`).join('')}
+      <div><button class="primary">سلّم التجربة</button></div></form>
+      ${practiceScore===null?'':`<p role="status">نتيجة التجربة <bdi>${practiceScore}/${practiceQuestions.length}</bdi></p>`}</section>`;
+}
+function help() {
+  const faqs=[
+    ['كيف أنضم إلى شعبة؟','افتح شُعبي وأدخل رمز الانضمام اللي بعطيك إياه المدرّس.'],
+    ['متى تظهر النتيجة؟','افتح نتائجي بعد إغلاق الامتحان. بعض النتائج تحتاج نشرًا أو تصحيحًا من المدرّس.'],
+    ['شو أعمل إذا انقطع الإنترنت؟','خلي صفحة الامتحان مفتوحة، ولما يرجع الاتصال تأكد من حالة حفظ الإجابة.']
+  ];
+  return hero('لوحة الطالب','المساعدة','أسئلة شائعة عن استخدام مقياس.')
+    + faqs.map(([question,answer])=>`<details class="card"><summary>${question}</summary><p>${answer}</p></details>`).join('');
 }
 function fields(includeName) {
   return `${includeName?'<label>الاسم الكامل<input name="name" maxlength="100" autocomplete="name" required></label>':''}
@@ -458,7 +481,9 @@ function roster() {
     `<div class="grid">${metric('بدأوا الامتحان',entries.length)}${metric('المحاولات المصحّحة',graded.length)}
       ${metric('المتوسط',average)}${metric('أعلى نسبة',marks.length?percent(Math.max(...marks)):'—')}
       ${metric('أدنى نسبة',marks.length?percent(Math.min(...marks)):'—')}${metric('نسبة النجاح',pass)}</div>
-    <section class="card"><div class="row"><h2>الطلاب والعلامات</h2><div class="actions">${button('تحديث النتائج','roster',exam.id)}${entries.length?button('تصدير CSV','roster-export'):''}</div></div>
+    <section class="card"><div class="row"><h2>الطلاب والعلامات</h2><div class="actions">${button('تحديث النتائج','roster',exam.id)}${entries.length?
+      button('تصدير CSV','roster-export','csv')+button('تصدير Excel','roster-export','xlsx')+button('تصدير PDF','roster-export','pdf'):''}
+      ${Date.now()>=gradeDeadline(exam)?button('تحديث ملخّص الإدارة','result-summary'):''}</div></div>
     ${entries.length?table(['اسم الطالب','الحالة','العلامة','مغادرة التبويب','وقت إضافي','إعادة المحاولة'],entries.map(entry=>[
       esc(entry.name),entry.submitted?'انتهت المحاولة':'بدأ الامتحان',
       entry.grade?`<bdi dir="ltr">${num(entry.grade.earned)} / ${num(entry.grade.total)}</bdi> · <bdi dir="ltr">${num(entry.grade.percent)}%</bdi>`:'—',
@@ -779,10 +804,10 @@ function people() {
     directoryPage=Math.min(directoryPage,lastPage);
     const visible=filtered.slice(directoryPage*15,directoryPage*15+15);
     return hero('لوحة الإدارة','الحسابات والصلاحيات','راجع الطلاب والمدرّسين والمديرين وأدر صلاحية التدريس.')+
-      `<div class="grid">${metric('الطلاب',db.students.length)}${metric('المدرّسون',db.teachers.length)}${metric('الامتحانات',db.exams.length)}
+      `<div class="grid">${metric('الطلاب',db.passRate?.students ?? '—')}${metric('المدرّسون',db.passRate?.teachers ?? '—')}${metric('الامتحانات',db.passRate?.exams ?? '—')}
         ${metric('نسبة النجاح',db.passRate?.total?Math.round(100*db.passRate.passed/db.passRate.total)+'%':'—')}</div>
-      <p class="muted">الأعداد تخص السجلات المحمّلة.</p>
-      <div class="actions">${button('إضافة حساب','page','addTeacher',true)}${button('تحديث القوائم','refresh-exams')}${button('حساب نسبة النجاح للسجلات المحمّلة','platform-pass-rate')}</div>
+      <p class="muted">نسبة النجاح تخص الامتحانات التي تم تحديث ملخّصها.</p>
+      <div class="actions">${button('إضافة حساب','page','addTeacher',true)}${button('تحديث القوائم','refresh-exams')}${button('تحميل إحصائيات المنصة','platform-pass-rate')}</div>
       <section class="card"><form id="directory-filter"><div class="grid">
         <label>الاسم أو البريد<input name="search" type="search" value="${esc(directoryFilter.search)}"></label>
         <label>الدور<select name="role"><option value="all">كل الأدوار</option>${Object.entries(roles).map(([key,label])=>
@@ -1005,14 +1030,42 @@ document.addEventListener('click',event=>{
     navigate('roster');
   });
   if (action==='roster-export' && role==='teacher' && selectedRoster) {
-    download([['الطالب','الامتحان','العلامة','العلامة الكلية','النسبة','الحالة'],
+    const rows=[['الطالب','الامتحان','العلامة','العلامة الكلية','النسبة','الحالة'].map(t),
       ...selectedRoster.entries.map(({name,grade})=>[name,selectedRoster.exam.title,grade?.earned ?? '',
-        grade?.total ?? '',grade?.percent ?? '',grade?(grade.passed?'ناجح':'دون علامة النجاح'):'بانتظار التصحيح'])]);
+        grade?.total ?? '',grade?.percent ?? '',t(grade?(grade.passed?'ناجح':'دون علامة النجاح'):'بانتظار التصحيح')])];
+    if (id==='xlsx') {
+      const url=URL.createObjectURL(resultWorkbook(rows));
+      Object.assign(document.createElement('a'),{href:url,download:'miqyas-results.xlsx'}).click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    } else if (id==='pdf') {
+      const report=window.open('','_blank');
+      if (!report) {toast('اسمح بفتح نافذة التقرير.');return;}
+      report.opener=null;
+      report.document.documentElement.lang=document.documentElement.lang;
+      report.document.documentElement.dir=document.documentElement.dir;
+      report.document.title=t('نتائج الامتحانات')+' | Miqyas';
+      const style=report.document.createElement('style');
+      style.textContent='body{font:14px system-ui;margin:24px;color:#14342b}header{display:flex;gap:12px;align-items:center}svg{width:34px;height:34px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #b6ccc3;padding:8px;text-align:start}th{background:#e9f3ed}tr{break-inside:avoid}@media print{button{display:none}}';
+      report.document.head.append(style);
+      report.document.body.innerHTML=`<header>${icon('chart')}<h1>Miqyas · ${t('نتائج الامتحانات')}</h1></header>
+        <h2>${esc(selectedRoster.exam.title)}</h2>${table(rows[0],rows.slice(1).map(row=>row.map(esc)))}
+        <button type="button">${t('طباعة أو حفظ PDF')}</button>`;
+      report.document.querySelector('button').addEventListener('click',()=>report.print());
+      report.focus();
+    } else download(rows);
   }
+  if (action==='result-summary' && role==='teacher' && selectedRoster) perform(async()=>{
+    const {exam}=selectedRoster;
+    const latest=await firebase.examRoster(exam,db.questions);
+    await firebase.saveResultSummary(exam.id,latest.entries);
+    selectedRoster={exam,...latest};
+    render();
+    toast('تم تحديث ملخّص الإدارة.');
+  });
   if (action==='directory-page' && role==='admin') {directoryPage=Number(id);render();}
   if (action==='subject-edit' && role==='admin') {subjectEdit=id;render();}
   if (action==='platform-pass-rate' && role==='admin') perform(async()=>{
-    db.passRate=await firebase.platformPassRate(db.exams);
+    db.passRate=await firebase.platformStats();
     render();
     toast(db.passRate.total?'تم حساب النسبة من المحاولات المسلّمة.':'ما في محاولات مسلّمة ومصحّحة.');
   });
@@ -1020,7 +1073,6 @@ document.addEventListener('click',event=>{
     const more=await firebase.loadAdminPage(id,db.cursors[id]);
     db[id].push(...more.items);
     db.cursors[id]=more.next;
-    if (id==='exams') delete db.passRate;
     render();
   });
   if (action==='delete-question' && role==='teacher' && confirm(t('حذف السؤال من بنك الأسئلة؟'))) perform(async()=>{
@@ -1160,8 +1212,13 @@ document.addEventListener('submit',event=>{
   perform(async()=>{
     try {
       const values=Object.fromEntries(form);
+      if (event.target.id==='practice-form' && role==='student') {
+        practiceScore=practiceQuestions.filter((question,i)=>Number(values['p'+i])===question[2]).length;
+        render();
+        return;
+      }
       if (firebasePortal) {
-        firebase ??= await import('./firebase-student.js?v=22');
+        firebase ??= await import('./firebase-student.js?v=23');
         if (event.target.id==='question-import' && role==='teacher') {
           importedQuestions=[];
           const file=form.get('csv');
@@ -1431,7 +1488,7 @@ document.addEventListener('submit',event=>{
 render();
 perform(async()=>{
   if (firebasePortal) {
-    firebase=await import('./firebase-student.js?v=22');
+    firebase=await import('./firebase-student.js?v=23');
     await loadFirebaseAccount(await firebase.profile(portal));
     render();
     return;

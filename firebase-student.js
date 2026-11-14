@@ -3,7 +3,7 @@ import {
   browserSessionPersistence, createUserWithEmailAndPassword, EmailAuthProvider, getAuth, initializeAuth, inMemoryPersistence, reauthenticateWithCredential, setPersistence, updatePassword,
   reload, sendEmailVerification, sendPasswordResetEmail, signInWithEmailAndPassword, signOut, updateProfile
 } from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-auth.js';
-import {addDoc, collection, deleteDoc, doc, documentId, getDoc, getDocs, getFirestore, limit, orderBy, query, runTransaction, serverTimestamp, setDoc, startAfter, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
+import {addDoc, collection, deleteDoc, doc, documentId, getAggregateFromServer, getCountFromServer, getDoc, getDocs, getFirestore, limit, orderBy, query, runTransaction, serverTimestamp, setDoc, startAfter, sum, Timestamp, updateDoc, where, writeBatch} from 'https://www.gstatic.com/firebasejs/12.7.0/firebase-firestore.js';
 
 const app=initializeApp({
   apiKey:'AIzaSyDi06jtrahqfRYpdRG523x3aJpqkullLsc',
@@ -156,19 +156,16 @@ export async function loadPeople() {
   return {classes,subjects:records(subjects),...Object.fromEntries(types.map((type,i)=>[type,pages[i].items])),
     cursors:Object.fromEntries(types.map((type,i)=>[type,pages[i].next]))};
 }
-export async function platformPassRate(exams) {
-  const counts=await Promise.all(exams.map(async exam=>{
-    const [key,participants]=await Promise.all([getDoc(doc(db,'examKeys',exam.id)),
-      getDocs(collection(db,'publishedExams',exam.id,'participants'))]);
-    if (!key.exists()) return {passed:0,total:0};
-    const submissions=await Promise.all(participants.docs.map(person=>
-      getDoc(doc(db,'studentProfiles',person.id,'attempts',exam.id))));
-    const grades=(await Promise.all(submissions.filter(item=>item.data()?.submittedAt)
-      .map(async item=>calculateGrade(key.data().answers,item.data().answers,exam.pass,
-        await manualMarks(item.ref,key.data().answers,item.data()))))).filter(Boolean);
-    return {passed:grades.filter(grade=>grade.passed).length,total:grades.length};
-  }));
-  return counts.reduce((sum,item)=>({passed:sum.passed+item.passed,total:sum.total+item.total}),{passed:0,total:0});
+export async function platformStats() {
+  const [students,teachers,exams,results]=await Promise.all([
+    ...['studentProfiles','teacherRoles','publishedExams'].map(path=>getCountFromServer(collection(db,path))),
+    getAggregateFromServer(collection(db,'resultSummaries'),{passed:sum('passed'),total:sum('total')})
+  ]);
+  return {students:students.data().count,teachers:teachers.data().count,exams:exams.data().count,...results.data()};
+}
+export function saveResultSummary(id,entries) {
+  const grades=entries.filter(entry=>entry.grade && entry.finalized);
+  return setDoc(doc(db,'resultSummaries',id),{passed:grades.filter(entry=>entry.grade.passed).length,total:grades.length});
 }
 
 function audit(batch,action,target) {
@@ -398,7 +395,7 @@ export async function enableExam(id,start,bankQuestions) {
 }
 export function rescheduleExam(id,start) {
   const batch=writeBatch(db);
-  batch.update(doc(db,'publishedExams',id),{start:Timestamp.fromDate(start)});
+  batch.update(doc(db,'publishedExams',id),{start:Timestamp.fromDate(start),rescheduledAt:serverTimestamp()});
   audit(batch,'schedule',id);
   return batch.commit();
 }
@@ -575,7 +572,7 @@ export async function examRoster(exam,bankQuestions) {
     const essays=attempt?.submittedAt?Object.entries(answers).filter(([,key])=>key.essay).map(([id,key])=>({
       id,prompt:prompts.get(id),response:attempt.answers[id],rubric:key.rubric,max:key.points,mark:marks[id],number:attempt.number ?? 1
     })):[];
-    return {id:entry.id,name:entry.data().name,minutes,submitted,canExtend:!!attempt && !attempt.submittedAt,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass,marks):null,essays,
+    return {id:entry.id,name:entry.data().name,minutes,submitted,finalized:!!attempt?.submittedAt,canExtend:!!attempt && !attempt.submittedAt,grade:submitted?calculateGrade(answers,attempt.answers,exam.pass,marks):null,essays,
       nextAttempt:(attempt?.number ?? 1)+1,retry:retry.get(entry.id),canRetry:!!attempt?.submittedAt,
       responses:submitted?attempt.answers:null,
       tabExits:tabEvents.size,lastTabExit:Math.max(0,...tabEvents.docs.map(event=>event.data().at.toMillis()))};

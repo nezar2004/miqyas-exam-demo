@@ -143,6 +143,17 @@ service cloud.firestore {
         && request.resource.data.code is string
         && request.resource.data.code.matches('^[A-Z0-9][A-Z0-9 -]{0,19}$');
     }
+    match /resultSummaries/{id} {
+      allow get: if admin() || ownsExam(id);
+      allow list: if admin();
+      allow create, update: if ownsExam(id)
+        && request.time >= get(/databases/$(database)/documents/publishedExams/$(id)).data.get('examClosesAt',
+          get(/databases/$(database)/documents/publishedExams/$(id)).data.start + duration.value(
+            get(/databases/$(database)/documents/publishedExams/$(id)).data.duration, 'm'))
+        && request.resource.data.keys().hasOnly(['passed','total'])
+        && request.resource.data.passed is int && request.resource.data.total is int
+        && request.resource.data.passed >= 0 && request.resource.data.passed <= request.resource.data.total;
+    }
     match /auditLog/{id} {
       allow read: if admin();
       allow create: if request.auth != null
@@ -223,7 +234,8 @@ service cloud.firestore {
             && request.resource.data.ready == true
             && existsAfter(/databases/$(database)/documents/examContent/$(id)))
           || (resource.data.get('ready', false) == true && request.time < resource.data.start
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['start'])
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['start','rescheduledAt'])
+            && request.resource.data.get('rescheduledAt', request.time) == request.time
             && request.resource.data.start > request.time)
         );
       allow update: if teacher() && resource.data.owner == request.auth.uid
